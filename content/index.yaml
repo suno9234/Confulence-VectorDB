@@ -1,0 +1,100 @@
+# 넥서스AI 사내 위키 페이지 트리 구조
+# ROOT_PAGE_ID: .env에서 설정 (Confluence 루트 페이지 ID)
+
+pages:
+  - title: "1. 회사 소개"
+    file: pages/01_company_overview.md
+    children:
+      - title: "1.1 비전 & 미션"
+        file: pages/02_vision_mission.md
+      - title: "1.2 연혁"
+        file: pages/03_history.md
+      - title: "1.3 조직도"
+        file: pages/04_org_chart.md
+        children:
+          - title: "1.3.1 경영진"
+            file: pages/05_executives.md
+          - title: "1.3.2 개발본부"
+            file: pages/06_dev_division.md
+          - title: "1.3.3 사업본부"
+            file: pages/07_biz_division.md
+          - title: "1.3.4 운영본부"
+            file: pages/08_ops_division.md
+
+  - title: "2. HR & 복지"
+    file: pages/09_hr_overview.md
+    children:
+      - title: "2.1 근무 규정"
+        file: pages/10_work_rules.md
+        children:
+          - title: "2.1.1 근무시간 & 유연근무제"
+            file: pages/11_work_hours.md
+          - title: "2.1.2 재택근무 정책"
+            file: pages/12_remote_work.md
+          - title: "2.1.3 휴가 규정"
+            file: pages/13_vacation.md
+      - title: "2.2 복리후생"
+        file: pages/14_benefits_overview.md
+        children:
+          - title: "2.2.1 건강검진 & 의료비 지원"
+            file: pages/15_health.md
+          - title: "2.2.2 교육 & 자기개발 지원"
+            file: pages/16_education.md
+          - title: "2.2.3 식비 & 교통비"
+            file: pages/17_meal_transport.md
+      - title: "2.3 온보딩 가이드"
+        file: pages/18_onboarding.md
+        children:
+          - title: "2.3.1 입사 첫 주 체크리스트"
+            file: pages/19_first_week.md
+          - title: "2.3.2 수습 기간 평가 기준"
+            file: pages/20_probation.md
+
+  - title: "3. IT 시스템"
+    file: pages/21_it_overview.md
+    children:
+      - title: "3.1 네트워크 & 인프라"
+        file: pages/22_network_overview.md
+        children:
+          - title: "3.1.1 사무실 네트워크 구성"
+            file: pages/23_office_network.md
+          - title: "3.1.2 VPN 설정 가이드"
+            file: pages/24_vpn.md
+          - title: "3.1.3 서버 목록 & 접속 정보"
+            file: pages/25_servers.md
+      - title: "3.2 개발 환경"
+        file: pages/26_dev_env_overview.md
+        children:
+          - title: "3.2.1 로컬 개발 환경 설정"
+            file: pages/27_local_setup.md
+          - title: "3.2.2 Git 브랜치 전략"
+            file: pages/28_git_strategy.md
+          - title: "3.2.3 CI/CD 파이프라인"
+            file: pages/29_cicd.md
+      - title: "3.3 보안 정책"
+        file: pages/30_security_overview.md
+        children:
+          - title: "3.3.1 비밀번호 정책"
+            file: pages/31_password_policy.md
+          - title: "3.3.2 접근 권한 관리"
+            file: pages/32_access_control.md
+
+  - title: "4. 제품 & 기술"
+    file: pages/33_product_overview.md
+    children:
+      - title: "4.1 NexusBot Platform"
+        file: pages/34_nexusbot_overview.md
+        children:
+          - title: "4.1.1 시스템 아키텍처"
+            file: pages/35_architecture.md
+          - title: "4.1.2 내부 API 레퍼런스"
+            file: pages/36_api_reference.md
+          - title: "4.1.3 배포 프로세스"
+            file: pages/37_deployment.md
+      - title: "4.2 데이터 파이프라인"
+        file: pages/38_data_pipeline_overview.md
+        children:
+          - title: "4.2.1 데이터 수집 & 전처리"
+            file: pages/39_data_collection.md
+          - title: "4.2.2 모델 학습 파이프라인"
+            file: pages/40_model_training.md

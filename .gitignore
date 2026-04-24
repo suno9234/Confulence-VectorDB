@@ -1,0 +1,21 @@
+# 시크릿
+.env
+.vscode
+
+# 벡터 DB (embed_pages.py로 재생성 가능)
+vector_db/
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+*.egg-info/
+
+# IDE
+.vscode/
+.idea/
+
+# OS
+.DS_Store
+Thumbs.db
