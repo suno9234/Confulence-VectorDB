@@ -1,0 +1,41 @@
+{
+  "build": {
+    "beforeDevCommand": "npm run dev",
+    "beforeBuildCommand": "npm run build",
+    "devPath": "http://localhost:1420",
+    "distDir": "../dist"
+  },
+  "package": {
+    "productName": "Confulence",
+    "version": "0.1.0"
+  },
+  "tauri": {
+    "allowlist": {
+      "all": false,
+      "dialog": { "open": true },
+      "shell": { "open": true },
+      "fs": {
+        "readFile": true,
+        "writeFile": true,
+        "scope": ["**"]
+      },
+      "path": { "all": true }
+    },
+    "bundle": {
+      "active": true,
+      "targets": "all",
+      "identifier": "com.nexusai.confulence",
+      "icon": ["icons/icon.ico"]
+    },
+    "security": { "csp": null },
+    "windows": [
+      {
+        "title": "Confulence",
+        "width": 960,
+        "height": 720,
+        "resizable": true,
+        "fullscreen": false
+      }
+    ]
+  }
+}

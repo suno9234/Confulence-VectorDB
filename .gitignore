@@ -12,6 +12,11 @@ __pycache__/
 venv/
 *.egg-info/
 
+# Tauri / Rust
+app/src-tauri/target/
+app/dist/
+app/node_modules/
+
 # IDE
 .vscode/
 .idea/
