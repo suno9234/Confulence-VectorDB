@@ -5,6 +5,16 @@ use std::collections::HashMap;
 use std::io::{BufRead, BufReader};
 use std::process::Stdio;
 
+// 배포 환경: ./python/python.exe 우선, 없으면 시스템 python 폴백
+fn resolve_python(cwd: &str) -> String {
+    let local = format!("{}\\python\\python.exe", cwd);
+    if std::path::Path::new(&local).exists() {
+        local
+    } else {
+        "python".to_string()
+    }
+}
+
 // ── .env 읽기 ────────────────────────────────────────────────────────────────
 
 #[tauri::command]
@@ -56,7 +66,6 @@ fn save_env(path: String, values: HashMap<String, String>) -> Result<(), String>
         }
     }
 
-    // 기존 파일에 없던 새 키 추가
     for (key, val) in &values {
         if !updated.contains(key) {
             lines.push(format!("{}={}", key, val));
@@ -77,9 +86,14 @@ async fn run_python(
     event_name: String,
 ) -> Result<(), String> {
     tauri::async_runtime::spawn_blocking(move || {
-        let mut child = std::process::Command::new("python")
+        let python = resolve_python(&cwd);
+        let models_dir = format!("{}\\models", cwd);
+
+        let mut child = std::process::Command::new(&python)
             .arg(&script)
             .current_dir(&cwd)
+            .env("HF_HOME", &models_dir)
+            .env("SENTENCE_TRANSFORMERS_HOME", &models_dir)
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .spawn()
@@ -88,7 +102,6 @@ async fn run_python(
         let stdout = child.stdout.take().unwrap();
         let stderr = child.stderr.take().unwrap();
 
-        // stdout 스레드
         let w1 = window.clone();
         let e1 = event_name.clone();
         let t1 = std::thread::spawn(move || {
@@ -97,7 +110,6 @@ async fn run_python(
             }
         });
 
-        // stderr 스레드
         let w2 = window.clone();
         let e2 = event_name.clone();
         let t2 = std::thread::spawn(move || {
@@ -122,11 +134,16 @@ async fn run_python(
 #[tauri::command]
 async fn run_search(query: String, cwd: String, top_k: u32) -> Result<String, String> {
     tauri::async_runtime::spawn_blocking(move || {
-        let output = std::process::Command::new("python")
+        let python = resolve_python(&cwd);
+        let models_dir = format!("{}\\models", cwd);
+
+        let output = std::process::Command::new(&python)
             .arg("backend/search_once.py")
             .arg(&query)
             .arg(top_k.to_string())
             .current_dir(&cwd)
+            .env("HF_HOME", &models_dir)
+            .env("SENTENCE_TRANSFORMERS_HOME", &models_dir)
             .output()
             .map_err(|e| format!("검색 실행 실패: {}", e))?;
 

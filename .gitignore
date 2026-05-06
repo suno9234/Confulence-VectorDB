@@ -1,8 +1,10 @@
 # 시크릿
 .env
-.vscode
 
-# 벡터 DB (embed_pages.py로 재생성 가능)
+# 배포 패키지 (build_package.ps1로 재생성)
+dist/
+
+# 벡터 DB (embed_pages.py로 재생성)
 vector_db/
 
 # Python
@@ -17,9 +19,10 @@ app/src-tauri/target/
 app/dist/
 app/node_modules/
 
-# IDE
+# IDE / 도구
 .vscode/
 .idea/
+.claude/
 
 # OS
 .DS_Store
