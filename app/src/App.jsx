@@ -9,9 +9,6 @@ const ENV_FIELDS = [
   { key: 'CONFLUENCE_API_TOKEN',  label: 'API 토큰',          placeholder: 'your_api_token', type: 'password' },
   { key: 'CONFLUENCE_SPACE_KEY',  label: 'Space Key',         placeholder: 'NAW' },
   { key: 'ROOT_PAGE_ID',          label: '루트 페이지 ID',     placeholder: '622768' },
-  { key: 'EMBEDDING_MODEL',       label: '임베딩 모델',        placeholder: 'jhgan/ko-sroberta-multitask' },
-  { key: 'VECTOR_DB_PATH',        label: 'Vector DB 경로',    placeholder: './vector_db' },
-  { key: 'VECTOR_DB_COLLECTION',  label: '컬렉션 이름',        placeholder: 'confluence' },
   { key: 'CHUNK_SIZE',            label: '청크 크기 (글자)',   placeholder: '500' },
   { key: 'CHUNK_OVERLAP',         label: '청크 오버랩 (글자)', placeholder: '50' },
 ]
@@ -20,15 +17,33 @@ export default function App() {
   const [tab, setTab]               = useState('settings')
   const [projectDir, setProjectDir] = useState(() => localStorage.getItem('projectDir') || '')
   const [env, setEnv]               = useState({})
+  const [dirty, setDirty]           = useState(false)
   const [saveMsg, setSaveMsg]       = useState('')
   const [running, setRunning]       = useState(false)
+  const [runStatus, setRunStatus]   = useState('idle') // 'idle' | 'running' | 'done' | 'error'
   const [output, setOutput]         = useState([])
   const [query, setQuery]           = useState('')
   const [topK, setTopK]             = useState(5)
   const [searching, setSearching]   = useState(false)
   const [results, setResults]       = useState([])
   const [searchErr, setSearchErr]   = useState('')
+  const [viewMode, setViewMode]     = useState('chunk') // 'chunk' | 'page'
+  const [alpha, setAlpha]           = useState(0.4)
+  const [collections, setCollections] = useState([])
+  const [selectedCol, setSelectedCol] = useState('')
+  const [deleteCol, setDeleteCol]     = useState('')
+  const [deleting, setDeleting]       = useState(false)
+  const [colErr, setColErr]           = useState('')
   const outputRef = useRef(null)
+
+  useEffect(() => {
+    if (!projectDir) {
+      invoke('get_exe_dir').then(dir => {
+        setProjectDir(dir)
+        localStorage.setItem('projectDir', dir)
+      }).catch(() => {})
+    }
+  }, [])
 
   useEffect(() => {
     if (projectDir) loadEnv()
@@ -39,6 +54,47 @@ export default function App() {
       outputRef.current.scrollTop = outputRef.current.scrollHeight
   }, [output])
 
+  useEffect(() => {
+    if ((tab === 'search' || tab === 'run') && projectDir) loadCollections()
+  }, [tab, projectDir])
+
+  async function loadCollections() {
+    setColErr('')
+    try {
+      const raw  = await invoke('list_collections', { cwd: projectDir })
+      if (!raw || !raw.trim()) { setColErr('응답 없음 (앱 재시작 필요)'); return }
+      const data = JSON.parse(raw)
+      if (data.error) { setColErr(data.error); return }
+      const list = data.collections || []
+      setCollections(list)
+      if (list.length > 0) {
+        if (!list.includes(selectedCol)) setSelectedCol(list[0])
+        if (!list.includes(deleteCol))   setDeleteCol(list[0])
+      }
+    } catch (e) {
+      setColErr(String(e))
+    }
+  }
+
+  async function doDelete() {
+    if (!deleteCol) return
+    const parts   = deleteCol.split('_')
+    const overlap = parts[parts.length - 1]
+    const chunk   = parts[parts.length - 2]
+    if (!window.confirm(`"청크 ${chunk} / 오버랩 ${overlap}" 컬렉션을 삭제하시겠습니까?\n이 작업은 되돌릴 수 없습니다.`)) return
+    setDeleting(true)
+    try {
+      const raw  = await invoke('delete_collection', { cwd: projectDir, collection: deleteCol })
+      const data = JSON.parse(raw)
+      if (data.ok) await loadCollections()
+      else alert(`삭제 실패: ${data.error}`)
+    } catch (e) {
+      alert(String(e))
+    } finally {
+      setDeleting(false)
+    }
+  }
+
   async function pickDir() {
     const dir = await open({ directory: true, title: '프로젝트 폴더 선택' })
     if (!dir) return
@@ -48,20 +104,26 @@ export default function App() {
 
   async function loadEnv() {
     try {
-      const data = await invoke('read_env', { path: `${projectDir}/.env` })
+      const data = await invoke('read_env', { path: `${projectDir}\\.env` })
       setEnv(data)
+      setDirty(false)
+      setSaveMsg('')
     } catch (e) {
       console.error(e)
     }
   }
 
   async function saveEnv() {
+    if (!projectDir) {
+      setSaveMsg('✗ 프로젝트 폴더를 먼저 선택하세요')
+      return
+    }
     try {
-      await invoke('save_env', { path: `${projectDir}/.env`, values: env })
+      await invoke('save_env', { path: `${projectDir}\\.env`, values: env })
+      setDirty(false)
       setSaveMsg('✓ 저장됨')
-      setTimeout(() => setSaveMsg(''), 2000)
     } catch (e) {
-      alert(e)
+      setSaveMsg(`✗ ${e}`)
     }
   }
 
@@ -69,11 +131,13 @@ export default function App() {
     if (!projectDir) return alert('프로젝트 폴더를 먼저 선택하세요')
     if (running) return
     setRunning(true)
+    setRunStatus('running')
     setOutput([`▶  python ${script}`])
 
     const unlisten = await listen('script_output', (event) => {
       if (event.payload === '__DONE__') {
         setRunning(false)
+        setRunStatus('done')
         setOutput(prev => [...prev, '', '✓  완료'])
         unlisten()
       } else {
@@ -86,6 +150,7 @@ export default function App() {
     } catch (e) {
       setOutput(prev => [...prev, `오류: ${e}`])
       setRunning(false)
+      setRunStatus('error')
       unlisten()
     }
   }
@@ -97,7 +162,7 @@ export default function App() {
     setResults([])
     setSearchErr('')
     try {
-      const raw  = await invoke('run_search', { query: query.trim(), cwd: projectDir, topK })
+      const raw  = await invoke('run_search', { query: query.trim(), cwd: projectDir, topK, collection: selectedCol, alpha })
       const data = JSON.parse(raw)
       if (data.error) setSearchErr(data.error)
       else setResults(data.results || [])
@@ -107,6 +172,30 @@ export default function App() {
       setSearching(false)
     }
   }
+
+  function aggregateByPage(chunks) {
+    const pageMap = {}
+    chunks.forEach(hit => {
+      const id = hit.metadata?.page_id || hit.metadata?.title
+      if (!pageMap[id]) {
+        pageMap[id] = { ...hit, chunkCount: 1, chunks: [hit] }
+      } else {
+        pageMap[id].chunkCount++
+        pageMap[id].chunks.push(hit)
+        if (hit.score > pageMap[id].score) pageMap[id].score = hit.score
+      }
+    })
+    return Object.values(pageMap)
+      .map(page => {
+        const sorted = [...page.chunks].sort(
+          (a, b) => Number(a.metadata?.chunk_index ?? 0) - Number(b.metadata?.chunk_index ?? 0)
+        )
+        return { ...page, document: sorted.map(c => c.document).join('\n\n') }
+      })
+      .sort((a, b) => b.score - a.score)
+  }
+
+  const displayResults = viewMode === 'page' ? aggregateByPage(results) : results
 
   return (
     <div className="app">
@@ -152,14 +241,29 @@ export default function App() {
                     type={f.type || 'text'}
                     placeholder={f.placeholder}
                     value={env[f.key] || ''}
-                    onChange={e => setEnv({ ...env, [f.key]: e.target.value })}
+                    onChange={e => { setEnv({ ...env, [f.key]: e.target.value }); setDirty(true); setSaveMsg('') }}
                   />
                 </div>
               ))}
             </div>
+            {projectDir && (
+              <div className="info-box">
+                <div className="info-row">
+                  <span className="info-label">Vector DB</span>
+                  <span className="info-value">{projectDir}\vector_db</span>
+                </div>
+                <div className="info-row">
+                  <span className="info-label">컬렉션</span>
+                  <span className="info-value">
+                    {`${env.VECTOR_DB_COLLECTION || 'confluence'}_${env.CHUNK_SIZE || '500'}_${env.CHUNK_OVERLAP || '50'}`}
+                  </span>
+                </div>
+              </div>
+            )}
             <div className="save-row">
-              <button className="btn-primary" onClick={saveEnv}>저장</button>
-              {saveMsg && <span className="save-msg">{saveMsg}</span>}
+              <button className={`btn-primary${dirty ? ' btn-dirty' : ''}`} onClick={saveEnv}>저장</button>
+              {dirty && !saveMsg && <span className="save-msg unsaved">● 저장되지 않은 변경사항</span>}
+              {saveMsg && <span className={`save-msg${saveMsg.startsWith('✗') ? ' save-err' : ''}`}>{saveMsg}</span>}
             </div>
           </div>
         )}
@@ -169,15 +273,50 @@ export default function App() {
           <div className="panel run-panel">
             <div className="run-btns">
               <button className="btn-run" disabled={running} onClick={() => runScript('backend/upload_content.py')}>
-                📤  페이지 업로드
+                {running ? '⏳  실행 중...' : '📤  페이지 업로드'}
               </button>
               <button className="btn-run" disabled={running} onClick={() => runScript('backend/embed_pages.py')}>
-                🧠  벡터 DB 임베딩
+                {running ? '⏳  실행 중...' : '🧠  벡터 DB 임베딩'}
               </button>
-              <button className="btn-clear" disabled={running} onClick={() => setOutput([])}>
+              <button className="btn-clear" disabled={running} onClick={() => { setOutput([]); setRunStatus('idle') }}>
                 지우기
               </button>
             </div>
+            {colErr && <div className="search-err" style={{fontSize:'12px'}}>컬렉션 로드 실패: {colErr}</div>}
+            <div className="delete-bar">
+              <select
+                className="col-select"
+                value={deleteCol}
+                onChange={e => setDeleteCol(e.target.value)}
+                disabled={collections.length === 0 || running || deleting}
+              >
+                {collections.length === 0
+                  ? <option>임베딩된 컬렉션 없음</option>
+                  : collections.map(c => {
+                      const parts = c.split('_')
+                      const overlap = parts[parts.length - 1]
+                      const chunk   = parts[parts.length - 2]
+                      return <option key={c} value={c}>청크 {chunk} / 오버랩 {overlap}</option>
+                    })
+                }
+              </select>
+              <button
+                className="btn-delete"
+                disabled={collections.length === 0 || running || deleting}
+                onClick={doDelete}
+              >
+                {deleting ? '삭제 중...' : '컬렉션 삭제'}
+              </button>
+              <button className="btn-sm" onClick={loadCollections} disabled={running || deleting}>↺</button>
+            </div>
+
+            {runStatus !== 'idle' && (
+              <div className={`run-status run-status-${runStatus}`}>
+                {runStatus === 'running' && <><span className="status-dot blink">●</span> 실행 중...</>}
+                {runStatus === 'done'    && <><span className="status-dot">●</span> 완료</>}
+                {runStatus === 'error'   && <><span className="status-dot">●</span> 오류 발생</>}
+              </div>
+            )}
             <div className="terminal" ref={outputRef}>
               {output.length === 0
                 ? <span className="t-placeholder">버튼을 눌러 스크립트를 실행하세요</span>
@@ -193,6 +332,26 @@ export default function App() {
         {/* ── 검색 탭 ── */}
         {tab === 'search' && (
           <div className="panel search-panel">
+            {colErr && <div className="search-err">컬렉션 로드 실패: {colErr}</div>}
+            <div className="col-bar">
+              <select
+                className="col-select"
+                value={selectedCol}
+                onChange={e => setSelectedCol(e.target.value)}
+                disabled={collections.length === 0}
+              >
+                {collections.length === 0
+                  ? <option>임베딩된 컬렉션 없음</option>
+                  : collections.map(c => {
+                      const parts = c.split('_')
+                      const overlap = parts[parts.length - 1]
+                      const chunk   = parts[parts.length - 2]
+                      return <option key={c} value={c}>청크 {chunk} / 오버랩 {overlap}</option>
+                    })
+                }
+              </select>
+              <button className="btn-sm" onClick={loadCollections}>↺</button>
+            </div>
             <div className="search-bar">
               <input
                 className="search-input"
@@ -208,10 +367,42 @@ export default function App() {
               >
                 {[3, 5, 10].map(n => <option key={n} value={n}>상위 {n}개</option>)}
               </select>
+              <div className="alpha-control">
+                <span className="alpha-label">BM25</span>
+                <input
+                  type="range" min="0" max="1" step="0.05"
+                  value={alpha}
+                  onChange={e => setAlpha(Number(e.target.value))}
+                  className="alpha-slider"
+                />
+                <span className="alpha-label">벡터</span>
+                <input
+                  type="number" min="0" max="1" step="0.05"
+                  value={alpha}
+                  onChange={e => setAlpha(Math.min(1, Math.max(0, Number(e.target.value))))}
+                  className="alpha-number"
+                />
+              </div>
               <button className="btn-primary" onClick={doSearch} disabled={searching}>
                 {searching ? '검색 중…' : '검색'}
               </button>
             </div>
+
+            {results.length > 0 && (
+              <div className="view-toggle">
+                <button className={`toggle-btn${viewMode === 'chunk' ? ' active' : ''}`} onClick={() => setViewMode('chunk')}>
+                  청크
+                </button>
+                <button className={`toggle-btn${viewMode === 'page' ? ' active' : ''}`} onClick={() => setViewMode('page')}>
+                  페이지
+                </button>
+                <span className="toggle-count">
+                  {viewMode === 'chunk'
+                    ? `${results.length}개 청크`
+                    : `${displayResults.length}개 페이지`}
+                </span>
+              </div>
+            )}
 
             {searchErr && <div className="search-err">{searchErr}</div>}
 
@@ -219,12 +410,34 @@ export default function App() {
               {results.length === 0 && !searching && !searchErr && (
                 <div className="t-placeholder">검색 결과가 여기에 표시됩니다</div>
               )}
-              {results.map((hit, i) => (
+              {displayResults.map((hit, i) => (
                 <div className="result-card" key={i}>
                   <div className="result-head">
                     <span className="result-idx">{i + 1}</span>
                     <span className="result-title">{hit.metadata?.title}</span>
-                    <span className="result-score">점수 {hit.score}</span>
+                    <div className="result-badges">
+                      {viewMode === 'page' && hit.chunkCount > 1 && (
+                        <span className="badge-chunk">{hit.chunkCount}개 청크</span>
+                      )}
+                      {hit.vector_score != null && (
+                        <span className="score-badge score-vec"
+                          title={"벡터 유사도 (코사인 유사도)\n범위: 0 ~ 1\n1에 가까울수록 쿼리와 의미적으로 유사\n0.8 이상: 매우 유사 / 0.5 이하: 관련도 낮음"}>
+                          벡터 {hit.vector_score}
+                        </span>
+                      )}
+                      {hit.bm25_score != null && (
+                        <span className="score-badge score-bm25"
+                          title={"BM25 키워드 매칭 점수\n범위: 0 이상 (상한 없음)\n검색어 단어가 문서에 얼마나 자주·집중적으로 등장하는지 측정\n고유명사·코드·이름 검색에 강함"}>
+                          BM25 {hit.bm25_score}
+                        </span>
+                      )}
+                      {hit.vector_score != null && hit.bm25_score != null && (
+                        <span className="score-badge score-rrf"
+                          title={"RRF (Reciprocal Rank Fusion) 통합 점수\n범위: 보통 0.01 ~ 0.03\n벡터 순위와 BM25 순위를 합산한 최종 점수\n두 검색 모두에서 상위일수록 높음"}>
+                          RRF {hit.score}
+                        </span>
+                      )}
+                    </div>
                   </div>
                   <div className="result-crumb">{hit.metadata?.breadcrumb}</div>
                   {hit.metadata?.url && (

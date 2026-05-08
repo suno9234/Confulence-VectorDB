@@ -17,13 +17,13 @@ ChromaDB에 임베딩하여 저장합니다.
 """
 
 import os
+from dotenv import load_dotenv
+load_dotenv()
+
 import requests
 import chromadb
 from bs4 import BeautifulSoup
 from sentence_transformers import SentenceTransformer
-from dotenv import load_dotenv
-
-load_dotenv()
 
 BASE_URL        = os.environ["CONFLUENCE_BASE_URL"].rstrip("/")
 EMAIL           = os.environ["CONFLUENCE_EMAIL"]
@@ -31,9 +31,9 @@ TOKEN           = os.environ["CONFLUENCE_API_TOKEN"]
 SPACE_KEY       = os.environ["CONFLUENCE_SPACE_KEY"]
 EMBEDDING_MODEL = os.getenv("EMBEDDING_MODEL", "all-MiniLM-L6-v2")
 VECTOR_DB_PATH  = os.getenv("VECTOR_DB_PATH", "./vector_db")
-COLLECTION_NAME = os.getenv("VECTOR_DB_COLLECTION", "confluence")
 CHUNK_SIZE      = int(os.getenv("CHUNK_SIZE", "500"))
 CHUNK_OVERLAP   = int(os.getenv("CHUNK_OVERLAP", "50"))
+COLLECTION_NAME = f"{os.getenv('VECTOR_DB_COLLECTION', 'confluence')}_{CHUNK_SIZE}_{CHUNK_OVERLAP}"
 
 AUTH    = (EMAIL, TOKEN)
 HEADERS = {"Accept": "application/json"}
@@ -121,7 +121,7 @@ def build_metadata(page: dict) -> dict:
     return {
         "page_id":       str(page["id"]),
         "title":         page["title"],
-        "url":           f"{BASE_URL}{page['_links']['webui']}",
+        "url":           f"{BASE_URL}{page['_links']['webui'] if page['_links']['webui'].startswith('/wiki') else '/wiki' + page['_links']['webui']}",
         "parent_id":     str(ancestors[-1]["id"]) if ancestors else "",
         "parent_title":  ancestors[-1]["title"]   if ancestors else "",
         "depth":         str(len(ancestors)),
@@ -174,8 +174,13 @@ def main():
         chunks   = chunk_text(text)
         metadata = build_metadata(page)
 
+        # 임베딩: 제목 + 청크 (검색 품질 향상)
+        # 저장:   청크만 (표시용 원본 유지)
+        title        = page["title"]
+        embed_texts  = [f"{title}\n{chunk}" for chunk in chunks]
+
         ids        = [f"{page['id']}_chunk_{j}" for j in range(len(chunks))]
-        embeddings = model.encode(chunks).tolist()
+        embeddings = model.encode(embed_texts).tolist()
         metadatas  = [{**metadata, "chunk_index": str(j)} for j in range(len(chunks))]
 
         # 이미 존재하는 청크 삭제 후 재삽입 (멱등성 보장)

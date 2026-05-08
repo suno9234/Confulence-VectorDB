@@ -4,6 +4,11 @@
 use std::collections::HashMap;
 use std::io::{BufRead, BufReader};
 use std::process::Stdio;
+#[cfg(windows)]
+use std::os::windows::process::CommandExt;
+
+#[cfg(windows)]
+const CREATE_NO_WINDOW: u32 = 0x08000000;
 
 // 배포 환경: ./python/python.exe 우선, 없으면 시스템 python 폴백
 fn resolve_python(cwd: &str) -> String {
@@ -13,6 +18,17 @@ fn resolve_python(cwd: &str) -> String {
     } else {
         "python".to_string()
     }
+}
+
+// ── exe 위치 반환 ─────────────────────────────────────────────────────────────
+
+#[tauri::command]
+fn get_exe_dir() -> Result<String, String> {
+    std::env::current_exe()
+        .map_err(|e| e.to_string())?
+        .parent()
+        .map(|p| p.to_string_lossy().to_string())
+        .ok_or_else(|| "exe 경로를 찾을 수 없습니다".to_string())
 }
 
 // ── .env 읽기 ────────────────────────────────────────────────────────────────
@@ -94,8 +110,10 @@ async fn run_python(
             .current_dir(&cwd)
             .env("HF_HOME", &models_dir)
             .env("SENTENCE_TRANSFORMERS_HOME", &models_dir)
+            .env("PYTHONIOENCODING", "utf-8")
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
+            .creation_flags(CREATE_NO_WINDOW)
             .spawn()
             .map_err(|e| format!("Python 실행 실패: {}", e))?;
 
@@ -129,10 +147,61 @@ async fn run_python(
     .map_err(|e| e.to_string())?
 }
 
+// ── 컬렉션 목록 조회 ─────────────────────────────────────────────────────────
+
+#[tauri::command]
+async fn list_collections(cwd: String) -> Result<String, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let python = resolve_python(&cwd);
+        let models_dir = format!("{}\\models", cwd);
+
+        let output = std::process::Command::new(&python)
+            .arg("backend/search_once.py")
+            .arg("--list")
+            .current_dir(&cwd)
+            .env("HF_HOME", &models_dir)
+            .env("SENTENCE_TRANSFORMERS_HOME", &models_dir)
+            .env("PYTHONIOENCODING", "utf-8")
+            .creation_flags(CREATE_NO_WINDOW)
+            .output()
+            .map_err(|e| format!("실행 실패: {}", e))?;
+
+        String::from_utf8(output.stdout).map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+// ── 컬렉션 삭제 ──────────────────────────────────────────────────────────────
+
+#[tauri::command]
+async fn delete_collection(cwd: String, collection: String) -> Result<String, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let python = resolve_python(&cwd);
+        let models_dir = format!("{}\\models", cwd);
+
+        let output = std::process::Command::new(&python)
+            .arg("backend/search_once.py")
+            .arg("--delete")
+            .arg(&collection)
+            .current_dir(&cwd)
+            .env("HF_HOME", &models_dir)
+            .env("SENTENCE_TRANSFORMERS_HOME", &models_dir)
+            .env("PYTHONIOENCODING", "utf-8")
+            .creation_flags(CREATE_NO_WINDOW)
+            .output()
+            .map_err(|e| format!("실행 실패: {}", e))?;
+
+        String::from_utf8(output.stdout).map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
 // ── 검색 (search_once.py 호출 → JSON 반환) ───────────────────────────────────
 
 #[tauri::command]
-async fn run_search(query: String, cwd: String, top_k: u32) -> Result<String, String> {
+async fn run_search(query: String, cwd: String, top_k: u32, collection: String, alpha: f64) -> Result<String, String> {
     tauri::async_runtime::spawn_blocking(move || {
         let python = resolve_python(&cwd);
         let models_dir = format!("{}\\models", cwd);
@@ -141,9 +210,13 @@ async fn run_search(query: String, cwd: String, top_k: u32) -> Result<String, St
             .arg("backend/search_once.py")
             .arg(&query)
             .arg(top_k.to_string())
+            .arg(&collection)
+            .arg(alpha.to_string())
             .current_dir(&cwd)
             .env("HF_HOME", &models_dir)
             .env("SENTENCE_TRANSFORMERS_HOME", &models_dir)
+            .env("PYTHONIOENCODING", "utf-8")
+            .creation_flags(CREATE_NO_WINDOW)
             .output()
             .map_err(|e| format!("검색 실행 실패: {}", e))?;
 
@@ -158,10 +231,13 @@ async fn run_search(query: String, cwd: String, top_k: u32) -> Result<String, St
 fn main() {
     tauri::Builder::default()
         .invoke_handler(tauri::generate_handler![
+            get_exe_dir,
             read_env,
             save_env,
             run_python,
             run_search,
+            list_collections,
+            delete_collection,
         ])
         .run(tauri::generate_context!())
         .expect("Tauri 앱 실행 오류");

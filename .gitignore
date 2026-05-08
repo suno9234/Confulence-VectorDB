@@ -7,6 +7,9 @@ dist/
 # 벡터 DB (embed_pages.py로 재생성)
 vector_db/
 
+# 임베딩 모델 (빌드 시 HuggingFace에서 다운로드)
+models/
+
 # Python
 __pycache__/
 *.py[cod]
@@ -16,6 +19,7 @@ venv/
 
 # Tauri / Rust
 app/src-tauri/target/
+app/src-tauri/WixTools/
 app/dist/
 app/node_modules/
 
@@ -27,3 +31,4 @@ app/node_modules/
 # OS
 .DS_Store
 Thumbs.db
+desktop.ini
