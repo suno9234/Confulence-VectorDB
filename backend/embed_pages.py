@@ -174,10 +174,11 @@ def main():
         chunks   = chunk_text(text)
         metadata = build_metadata(page)
 
-        # 임베딩: 제목 + 청크 (검색 품질 향상)
+        # 임베딩: breadcrumb + 제목 + 청크 (계층 맥락 포함)
         # 저장:   청크만 (표시용 원본 유지)
         title        = page["title"]
-        embed_texts  = [f"{title}\n{chunk}" for chunk in chunks]
+        breadcrumb   = metadata["breadcrumb"]
+        embed_texts  = [f"{breadcrumb}\n{title}\n{chunk}" for chunk in chunks]
 
         ids        = [f"{page['id']}_chunk_{j}" for j in range(len(chunks))]
         embeddings = model.encode(embed_texts).tolist()

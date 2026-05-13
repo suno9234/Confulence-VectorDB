@@ -120,6 +120,11 @@ print('  ko-sroberta-multitask 다운로드 중...')
 from sentence_transformers import SentenceTransformer
 SentenceTransformer('jhgan/ko-sroberta-multitask')
 print('  완료')
+
+print('  mmarco-mMiniLMv2 리랭커 다운로드 중...')
+from sentence_transformers import CrossEncoder
+CrossEncoder('cross-encoder/mmarco-mMiniLMv2-L12-H384-v1')
+print('  완료')
 "@
     $DownloadScript | & "$Dist\python\python.exe" -
 }
