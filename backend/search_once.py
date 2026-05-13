@@ -1,10 +1,11 @@
 """
-Tauri 앱에서 호출하는 단일 검색 스크립트 (Vector + BM25 하이브리드 RRF)
+Tauri 앱에서 호출하는 단일 검색 스크립트
 결과를 JSON으로 stdout에 출력합니다.
 
 사용법:
     python search_once.py "검색어" [top_k] [collection] [alpha]
-    alpha: 0.0=BM25전용 ~ 1.0=벡터전용 (기본값 0.4)
+    python search_once.py --list
+    python search_once.py --delete <collection>
 """
 
 import sys
@@ -14,76 +15,13 @@ from dotenv import load_dotenv
 load_dotenv()
 
 VECTOR_DB_PATH  = os.getenv("VECTOR_DB_PATH", "./vector_db")
-EMBEDDING_MODEL = os.getenv("EMBEDDING_MODEL", "jhgan/ko-sroberta-multitask")
 CHUNK_SIZE      = int(os.getenv("CHUNK_SIZE", "500"))
 CHUNK_OVERLAP   = int(os.getenv("CHUNK_OVERLAP", "50"))
 COLLECTION_NAME = f"{os.getenv('VECTOR_DB_COLLECTION', 'confluence')}_{CHUNK_SIZE}_{CHUNK_OVERLAP}"
-RRF_K           = 60
-
-
-def build_bm25(collection):
-    from rank_bm25 import BM25Okapi
-    data      = collection.get(include=["documents", "metadatas"])
-    all_docs  = [
-        {"id": uid, "document": doc, "metadata": meta}
-        for uid, doc, meta in zip(data["ids"], data["documents"], data["metadatas"])
-    ]
-    corpus = [doc.split() for doc in data["documents"]]
-    return BM25Okapi(corpus), all_docs
-
-
-def vector_search(query, collection, model, n):
-    emb = model.encode([query]).tolist()
-    res = collection.query(
-        query_embeddings=emb,
-        n_results=min(n, collection.count()),
-        include=["documents", "metadatas", "distances"],
-    )
-    return [
-        {"id": uid, "document": doc, "metadata": meta, "score": 1 - dist}
-        for uid, doc, meta, dist in zip(
-            res["ids"][0], res["documents"][0],
-            res["metadatas"][0], res["distances"][0],
-        )
-    ]
-
-
-def bm25_search(query, bm25, all_docs, n):
-    scores = bm25.get_scores(query.split())
-    ranked = sorted(enumerate(scores), key=lambda x: x[1], reverse=True)[:n]
-    return [
-        {**all_docs[i], "score": float(score)}
-        for i, score in ranked if score > 0
-    ]
-
-
-def rrf_fusion(v_hits, b_hits, alpha, top_k):
-    scores, docs, v_scores, b_scores = {}, {}, {}, {}
-    for rank, hit in enumerate(v_hits):
-        uid = hit["id"]
-        scores[uid]  = scores.get(uid, 0) + alpha * (1.0 / (RRF_K + rank))
-        docs[uid]    = hit
-        v_scores[uid] = round(hit["score"], 4)
-    for rank, hit in enumerate(b_hits):
-        uid = hit["id"]
-        scores[uid]  = scores.get(uid, 0) + (1 - alpha) * (1.0 / (RRF_K + rank))
-        docs[uid]    = hit
-        b_scores[uid] = round(hit["score"], 2)
-    ranked = sorted(scores.items(), key=lambda x: x[1], reverse=True)[:top_k]
-    return [
-        {
-            "document":     docs[uid]["document"],
-            "metadata":     docs[uid]["metadata"],
-            "score":        round(rrf, 4),
-            "vector_score": v_scores.get(uid),
-            "bm25_score":   b_scores.get(uid),
-        }
-        for uid, rrf in ranked
-    ]
 
 
 def main():
-    if len(sys.argv) >= 2 and sys.argv[1] == '--list':
+    if len(sys.argv) >= 2 and sys.argv[1] == "--list":
         try:
             import chromadb
             client = chromadb.PersistentClient(path=VECTOR_DB_PATH)
@@ -93,7 +31,7 @@ def main():
             print(json.dumps({"collections": [], "error": str(e)}, ensure_ascii=False))
         return
 
-    if len(sys.argv) >= 3 and sys.argv[1] == '--delete':
+    if len(sys.argv) >= 3 and sys.argv[1] == "--delete":
         try:
             import chromadb
             client = chromadb.PersistentClient(path=VECTOR_DB_PATH)
@@ -113,36 +51,44 @@ def main():
     alpha           = float(sys.argv[4]) if len(sys.argv) > 4 else 0.4
 
     try:
-        import chromadb
-        from sentence_transformers import SentenceTransformer
+        from retriever import search, rerank, fetch_all_chunks_for_pages, RERANK_FETCH_K, RERANK_THRESHOLD
 
-        client     = chromadb.PersistentClient(path=VECTOR_DB_PATH)
-        collection = client.get_collection(collection_name)
-        model      = SentenceTransformer(EMBEDDING_MODEL)
+        # 1. 후보 20개 검색 → 리랭킹 → 상위 top_k 페이지 선택
+        hits = search(query=query, collection_name=collection_name, top_k=RERANK_FETCH_K, alpha=alpha)
+        hits = rerank(query, hits)
 
-        fetch_n = top_k * 3
+        # 2. 페이지별 최고 점수 기록: rerank로 선택, RRF는 표시용
+        page_rerank: dict = {}
+        page_rrf:    dict = {}
+        page_vscores: dict = {}
+        page_bscores: dict = {}
+        for hit in hits:
+            pid    = hit["metadata"].get("page_id", "")
+            rscore = hit.get("rerank_score", hit["score"])
+            if pid and rscore > page_rerank.get(pid, float("-inf")):
+                page_rerank[pid]  = rscore
+                page_rrf[pid]     = hit["score"]
+                page_vscores[pid] = hit.get("vector_score")
+                page_bscores[pid] = hit.get("bm25_score")
+        page_rerank  = {pid: s for pid, s in page_rerank.items() if s > RERANK_THRESHOLD}
+        sorted_pages = sorted(page_rerank.items(), key=lambda x: x[1], reverse=True)[:top_k]
+        page_rerank  = dict(sorted_pages)
+        page_rrf     = {pid: s for pid, s in page_rrf.items()     if pid in page_rerank}
+        page_vscores = {pid: v for pid, v in page_vscores.items() if pid in page_rerank}
+        page_bscores = {pid: b for pid, b in page_bscores.items() if pid in page_rerank}
 
-        if alpha >= 1.0:
-            raw = vector_search(query, collection, model, top_k)
-            hits = [{"document": h["document"], "metadata": h["metadata"],
-                     "score": round(h["score"], 4),
-                     "vector_score": round(h["score"], 4), "bm25_score": None}
-                    for h in raw]
-        elif alpha <= 0.0:
-            bm25, all_docs = build_bm25(collection)
-            raw = bm25_search(query, bm25, all_docs, top_k)
-            hits = [{"document": h["document"], "metadata": h["metadata"],
-                     "score": round(h["score"], 2),
-                     "vector_score": None, "bm25_score": round(h["score"], 2)}
-                    for h in raw]
-        else:
-            bm25, all_docs = build_bm25(collection)
-            v_hits = vector_search(query, collection, model, fetch_n)
-            b_hits = bm25_search(query, bm25, all_docs, fetch_n)
-            hits   = rrf_fusion(v_hits, b_hits, alpha, top_k)
+        # 3. 해당 페이지의 전체 청크 조회
+        all_chunks = fetch_all_chunks_for_pages(list(page_rerank.keys()), collection_name)
 
-        print(json.dumps({"results": hits}, ensure_ascii=False))
+        # 4. 각 청크에 표시용 RRF + 정렬용 rerank_score 부여
+        for chunk in all_chunks:
+            pid = chunk["metadata"].get("page_id", "")
+            chunk["score"]        = page_rrf.get(pid, 0.0)
+            chunk["rerank_score"] = page_rerank.get(pid, 0.0)
+            chunk["vector_score"] = page_vscores.get(pid)
+            chunk["bm25_score"]   = page_bscores.get(pid)
 
+        print(json.dumps({"results": all_chunks}, ensure_ascii=False))
     except Exception as e:
         print(json.dumps({"error": str(e), "results": []}, ensure_ascii=False))
 

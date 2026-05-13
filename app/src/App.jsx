@@ -2,6 +2,8 @@ import { useState, useEffect, useRef } from 'react'
 import { invoke } from '@tauri-apps/api/tauri'
 import { listen } from '@tauri-apps/api/event'
 import { open } from '@tauri-apps/api/dialog'
+import ReactMarkdown from 'react-markdown'
+import remarkGfm from 'remark-gfm'
 
 const ENV_FIELDS = [
   { key: 'CONFLUENCE_BASE_URL',   label: 'Confluence URL',   placeholder: 'https://your-domain.atlassian.net' },
@@ -11,6 +13,8 @@ const ENV_FIELDS = [
   { key: 'ROOT_PAGE_ID',          label: '루트 페이지 ID',     placeholder: '622768' },
   { key: 'CHUNK_SIZE',            label: '청크 크기 (글자)',   placeholder: '500' },
   { key: 'CHUNK_OVERLAP',         label: '청크 오버랩 (글자)', placeholder: '50' },
+  { key: 'RERANK_FETCH_K',        label: '리랭킹 후보 수',     placeholder: '20' },
+  { key: 'RERANK_THRESHOLD',      label: '리랭킹 임계값',      placeholder: '-1.0' },
 ]
 
 export default function App() {
@@ -36,6 +40,15 @@ export default function App() {
   const [colErr, setColErr]           = useState('')
   const outputRef = useRef(null)
 
+  // ── 챗봇 ──
+  const [chatMessages, setChatMessages] = useState([])
+  const [chatInput, setChatInput]       = useState('')
+  const [chatting, setChatting]         = useState(false)
+  const [chatCol, setChatCol]           = useState('')
+  const [chatTopK, setChatTopK]         = useState(5)
+  const [chatAlpha, setChatAlpha]       = useState(0.4)
+  const chatEndRef = useRef(null)
+
   useEffect(() => {
     if (!projectDir) {
       invoke('get_exe_dir').then(dir => {
@@ -55,8 +68,12 @@ export default function App() {
   }, [output])
 
   useEffect(() => {
-    if ((tab === 'search' || tab === 'run') && projectDir) loadCollections()
+    if ((tab === 'search' || tab === 'run' || tab === 'chat') && projectDir) loadCollections()
   }, [tab, projectDir])
+
+  useEffect(() => {
+    if (chatEndRef.current) chatEndRef.current.scrollIntoView({ behavior: 'smooth' })
+  }, [chatMessages])
 
   async function loadCollections() {
     setColErr('')
@@ -92,6 +109,86 @@ export default function App() {
       alert(String(e))
     } finally {
       setDeleting(false)
+    }
+  }
+
+  async function sendChat() {
+    if (!projectDir) return alert('프로젝트 폴더를 먼저 선택하세요')
+    if (!chatInput.trim() || chatting) return
+
+    const question = chatInput.trim()
+    setChatInput('')
+    setChatting(true)
+    setChatMessages(prev => [
+      ...prev,
+      { role: 'user', content: question },
+      { role: 'assistant', content: '', sources: [], streaming: true, status: '쿼리 정제 중...' },
+    ])
+
+    const unlisten = await listen('chat_output', (event) => {
+      const line = event.payload
+      if (line.startsWith('__ERR__')) return
+
+      try {
+        const data = JSON.parse(line)
+        if (data.status !== undefined) {
+          setChatMessages(prev => {
+            const msgs = [...prev]
+            msgs[msgs.length - 1] = { ...msgs[msgs.length - 1], status: data.status }
+            return msgs
+          })
+        } else if (data.t !== undefined) {
+          setChatMessages(prev => {
+            const msgs = [...prev]
+            msgs[msgs.length - 1] = {
+              ...msgs[msgs.length - 1],
+              status: '',
+              content: msgs[msgs.length - 1].content + data.t,
+            }
+            return msgs
+          })
+        } else if (data.sources) {
+          setChatMessages(prev => {
+            const msgs = [...prev]
+            msgs[msgs.length - 1] = { ...msgs[msgs.length - 1], sources: data.sources }
+            return msgs
+          })
+        } else if (data.done) {
+          setChatMessages(prev => {
+            const msgs = [...prev]
+            msgs[msgs.length - 1] = { ...msgs[msgs.length - 1], streaming: false }
+            return msgs
+          })
+          setChatting(false)
+          unlisten()
+        } else if (data.error) {
+          setChatMessages(prev => {
+            const msgs = [...prev]
+            msgs[msgs.length - 1] = { ...msgs[msgs.length - 1], content: `오류: ${data.error}`, streaming: false }
+            return msgs
+          })
+          setChatting(false)
+          unlisten()
+        }
+      } catch (_) {}
+    })
+
+    try {
+      await invoke('run_chat', {
+        question,
+        cwd:        projectDir,
+        collection: chatCol || collections[0] || '',
+        topK:       chatTopK,
+        alpha:      chatAlpha,
+      })
+    } catch (e) {
+      setChatMessages(prev => {
+        const msgs = [...prev]
+        msgs[msgs.length - 1] = { ...msgs[msgs.length - 1], content: `오류: ${e}`, streaming: false }
+        return msgs
+      })
+      setChatting(false)
+      unlisten()
     }
   }
 
@@ -178,11 +275,11 @@ export default function App() {
     chunks.forEach(hit => {
       const id = hit.metadata?.page_id || hit.metadata?.title
       if (!pageMap[id]) {
-        pageMap[id] = { ...hit, chunkCount: 1, chunks: [hit] }
+        pageMap[id] = { metadata: hit.metadata, chunkCount: 1, chunks: [hit], best: hit }
       } else {
         pageMap[id].chunkCount++
         pageMap[id].chunks.push(hit)
-        if (hit.score > pageMap[id].score) pageMap[id].score = hit.score
+        if (hit.score > pageMap[id].best.score) pageMap[id].best = hit
       }
     })
     return Object.values(pageMap)
@@ -190,7 +287,14 @@ export default function App() {
         const sorted = [...page.chunks].sort(
           (a, b) => Number(a.metadata?.chunk_index ?? 0) - Number(b.metadata?.chunk_index ?? 0)
         )
-        return { ...page, document: sorted.map(c => c.document).join('\n\n') }
+        return {
+          metadata:     page.metadata,
+          chunkCount:   page.chunkCount,
+          document:     sorted.map(c => c.document).join('\n\n'),
+          score:        page.best.score,
+          vector_score: page.best.vector_score,
+          bm25_score:   page.best.bm25_score,
+        }
       })
       .sort((a, b) => b.score - a.score)
   }
@@ -216,6 +320,7 @@ export default function App() {
           { id: 'settings', label: '⚙  설정' },
           { id: 'run',      label: '▶  실행' },
           { id: 'search',   label: '🔍  검색' },
+          { id: 'chat',     label: '💬  챗봇' },
         ].map(t => (
           <button
             key={t.id}
@@ -421,19 +526,19 @@ export default function App() {
                       )}
                       {hit.vector_score != null && (
                         <span className="score-badge score-vec"
-                          title={"벡터 유사도 (코사인 유사도)\n범위: 0 ~ 1\n1에 가까울수록 쿼리와 의미적으로 유사\n0.8 이상: 매우 유사 / 0.5 이하: 관련도 낮음"}>
+                          title={"벡터 유사도 (코사인 유사도)\n범위: 0 ~ 1\n1에 가까울수록 쿼리와 의미적으로 유사"}>
                           벡터 {hit.vector_score}
                         </span>
                       )}
                       {hit.bm25_score != null && (
                         <span className="score-badge score-bm25"
-                          title={"BM25 키워드 매칭 점수\n범위: 0 이상 (상한 없음)\n검색어 단어가 문서에 얼마나 자주·집중적으로 등장하는지 측정\n고유명사·코드·이름 검색에 강함"}>
+                          title={"BM25 키워드 매칭 점수\n범위: 0 이상 (상한 없음)\n고유명사·코드·이름 검색에 강함"}>
                           BM25 {hit.bm25_score}
                         </span>
                       )}
-                      {hit.vector_score != null && hit.bm25_score != null && (
+                      {alpha > 0 && alpha < 1 && (
                         <span className="score-badge score-rrf"
-                          title={"RRF (Reciprocal Rank Fusion) 통합 점수\n범위: 보통 0.01 ~ 0.03\n벡터 순위와 BM25 순위를 합산한 최종 점수\n두 검색 모두에서 상위일수록 높음"}>
+                          title={"RRF (Reciprocal Rank Fusion) 통합 점수\n벡터 순위와 BM25 순위를 합산한 최종 점수"}>
                           RRF {hit.score}
                         </span>
                       )}
@@ -448,6 +553,94 @@ export default function App() {
                   <pre className="result-body">{hit.document}</pre>
                 </div>
               ))}
+            </div>
+          </div>
+        )}
+
+        {/* ── 챗봇 탭 ── */}
+        {tab === 'chat' && (
+          <div className="panel chat-panel">
+            {/* 상단 옵션 바 */}
+            <div className="chat-options">
+              <select
+                className="col-select"
+                value={chatCol || collections[0] || ''}
+                onChange={e => setChatCol(e.target.value)}
+                disabled={collections.length === 0}
+              >
+                {collections.length === 0
+                  ? <option>임베딩된 컬렉션 없음</option>
+                  : collections.map(c => {
+                      const parts = c.split('_')
+                      const overlap = parts[parts.length - 1]
+                      const chunk   = parts[parts.length - 2]
+                      return <option key={c} value={c}>청크 {chunk} / 오버랩 {overlap}</option>
+                    })
+                }
+              </select>
+              <div className="alpha-control">
+                <span className="alpha-label">BM25</span>
+                <input type="range" min="0" max="1" step="0.05"
+                  value={chatAlpha} onChange={e => setChatAlpha(Number(e.target.value))}
+                  className="alpha-slider" />
+                <span className="alpha-label">벡터</span>
+                <input type="number" min="0" max="1" step="0.05"
+                  value={chatAlpha}
+                  onChange={e => setChatAlpha(Math.min(1, Math.max(0, Number(e.target.value))))}
+                  className="alpha-number" />
+              </div>
+              <select className="topk-select" value={chatTopK} onChange={e => setChatTopK(Number(e.target.value))}>
+                {[3, 5, 10].map(n => <option key={n} value={n}>참고 {n}개</option>)}
+              </select>
+              <button className="btn-sm" onClick={() => setChatMessages([])}>지우기</button>
+            </div>
+
+            {/* 메시지 영역 */}
+            <div className="chat-messages">
+              {chatMessages.length === 0 && (
+                <div className="chat-placeholder">질문을 입력하면 Confluence 문서 기반으로 답변합니다</div>
+              )}
+              {chatMessages.map((msg, i) => (
+                <div key={i} className={`chat-msg chat-msg-${msg.role}`}>
+                  <div className="chat-bubble">
+                    {msg.role === 'assistant' && msg.streaming && msg.status && !msg.content && (
+                      <span className="chat-status">{msg.status}</span>
+                    )}
+                    {msg.role === 'assistant'
+                      ? <ReactMarkdown remarkPlugins={[remarkGfm]}>{msg.content}</ReactMarkdown>
+                      : msg.content
+                    }
+                    {msg.streaming && msg.content && <span className="cursor">▌</span>}
+                  </div>
+                  {msg.role === 'assistant' && !msg.streaming && msg.sources?.length > 0 && (
+                    <div className="chat-sources">
+                      <span className="chat-sources-label">참고 문서</span>
+                      {msg.sources.map((s, j) => (
+                        <a key={j} className="chat-source-item" href={s.url} target="_blank" rel="noreferrer"
+                          title={s.breadcrumb}>
+                          {s.title}
+                        </a>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              ))}
+              <div ref={chatEndRef} />
+            </div>
+
+            {/* 입력 바 */}
+            <div className="chat-input-bar">
+              <input
+                className="chat-input"
+                placeholder="Confluence 문서에 대해 질문하세요..."
+                value={chatInput}
+                onChange={e => setChatInput(e.target.value)}
+                onKeyDown={e => e.key === 'Enter' && !e.shiftKey && sendChat()}
+                disabled={chatting}
+              />
+              <button className="btn-primary" onClick={sendChat} disabled={chatting || !chatInput.trim()}>
+                {chatting ? '생성 중…' : '전송'}
+              </button>
             </div>
           </div>
         )}
