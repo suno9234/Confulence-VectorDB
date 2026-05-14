@@ -35,6 +35,9 @@ CHUNK_SIZE      = int(os.getenv("CHUNK_SIZE", "500"))
 CHUNK_OVERLAP   = int(os.getenv("CHUNK_OVERLAP", "50"))
 COLLECTION_NAME = f"{os.getenv('VECTOR_DB_COLLECTION', 'confluence')}_{CHUNK_SIZE}_{CHUNK_OVERLAP}"
 
+CONFLUENCE_FETCH_LIMIT    = int(os.getenv("CONFLUENCE_FETCH_LIMIT",    "50"))  # 배치당 페이지 수 (v1 API 최대 50)
+CONFLUENCE_REQUEST_DELAY  = float(os.getenv("CONFLUENCE_REQUEST_DELAY", "1.0")) # 배치 요청 사이 대기 시간 (초)
+
 AUTH    = (EMAIL, TOKEN)
 HEADERS = {"Accept": "application/json"}
 
@@ -43,16 +46,16 @@ HEADERS = {"Accept": "application/json"}
 
 def fetch_all_pages():
     """Space 내 모든 페이지를 페이지네이션으로 전부 수집합니다."""
-    pages   = []
-    start   = 0
-    limit   = 50  # v1 API expand 사용 시 50 권장
+    import time
 
+    pages       = []
+    start       = 0
     params_base = {
         "spaceKey": SPACE_KEY,
         "type":     "page",
         "status":   "current",
         "expand":   "ancestors,version,body.storage,metadata.labels",
-        "limit":    limit,
+        "limit":    CONFLUENCE_FETCH_LIMIT,
     }
 
     while True:
@@ -71,7 +74,10 @@ def fetch_all_pages():
         # _links.next 없으면 마지막 페이지
         if not data.get("_links", {}).get("next"):
             break
-        start += limit
+
+        start += CONFLUENCE_FETCH_LIMIT
+        if CONFLUENCE_REQUEST_DELAY > 0:
+            time.sleep(CONFLUENCE_REQUEST_DELAY)
 
     return pages
 
