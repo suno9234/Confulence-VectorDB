@@ -11,10 +11,12 @@ const ENV_FIELDS = [
   { key: 'CONFLUENCE_API_TOKEN',  label: 'API 토큰',          placeholder: 'your_api_token', type: 'password' },
   { key: 'CONFLUENCE_SPACE_KEY',  label: 'Space Key',         placeholder: 'NAW' },
   { key: 'ROOT_PAGE_ID',          label: '루트 페이지 ID',     placeholder: '622768' },
-  { key: 'CHUNK_SIZE',            label: '청크 크기 (글자)',   placeholder: '500' },
-  { key: 'CHUNK_OVERLAP',         label: '청크 오버랩 (글자)', placeholder: '50' },
-  { key: 'RERANK_FETCH_K',        label: '리랭킹 후보 수',     placeholder: '20' },
-  { key: 'RERANK_THRESHOLD',      label: '리랭킹 임계값',      placeholder: '-1.0' },
+  { key: 'CONFLUENCE_FETCH_LIMIT',   label: 'API 배치 크기',      placeholder: '50' },
+  { key: 'CONFLUENCE_REQUEST_DELAY', label: 'API 딜레이 (초)',     placeholder: '1.0' },
+  { key: 'CHUNK_SIZE',               label: '청크 크기 (글자)',    placeholder: '500' },
+  { key: 'CHUNK_OVERLAP',            label: '청크 오버랩 (글자)', placeholder: '50' },
+  { key: 'RERANK_FETCH_K',           label: '리랭킹 후보 수',      placeholder: '20' },
+  { key: 'RERANK_THRESHOLD',         label: '리랭킹 임계값',       placeholder: '-1.0' },
 ]
 
 export default function App() {
