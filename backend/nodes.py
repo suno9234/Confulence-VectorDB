@@ -7,7 +7,7 @@ nodes.py — LangGraph 파이프라인 노드 함수 정의
 
 from typing import TypedDict
 
-from retriever import search, rerank, fetch_all_chunks_for_pages, COLLECTION_NAME, RERANK_FETCH_K, RERANK_THRESHOLD
+from retriever import search_rerank_fetch, COLLECTION_NAME
 from prompts   import REFINE_PROMPT, RAG_PROMPT
 from llm       import get_llm
 
@@ -36,56 +36,19 @@ def refine_node(state: State) -> dict:
 
 def retrieve_node(state: State) -> dict:
     """
-    정제 쿼리로 하이브리드 검색 후 cross-encoder 리랭킹을 거쳐 관련 페이지 청크를 반환.
-
-    처리 순서:
-    1. RERANK_FETCH_K(=20)개 후보 청크 검색 (BM25 + 벡터 RRF)
-    2. cross-encoder로 리랭킹 → rerank_score 부여
-    3. RERANK_THRESHOLD 미만 페이지 제거
-    4. rerank_score 기준 상위 top_k 페이지 선정
-    5. 선정된 페이지의 전체 청크 조회 (LLM에게 잘린 청크가 아닌 전체 문서 제공)
+    정제 쿼리로 하이브리드 검색 + 리랭킹 + 페이지 선택 + 전체 청크 조회.
+    세부 로직은 retriever.search_rerank_fetch()에 위임.
     """
-    top_k    = state.get("top_k", 5)
+    query    = state.get("refined_query") or state["question"]
     col_name = state.get("collection") or COLLECTION_NAME
 
-    query = state.get("refined_query") or state["question"]
-    hits  = search(
+    chunks = search_rerank_fetch(
         query           = query,
         collection_name = col_name,
-        top_k           = RERANK_FETCH_K,   # 리랭킹 전 충분한 후보 확보
+        top_k           = state.get("top_k", 5),
         alpha           = state.get("alpha", 0.4),
     )
-    hits = rerank(query, hits)
-
-    # 페이지별 최고 점수 집계: rerank_score로 필터링·정렬, RRF score는 UI 표시용으로 보존
-    page_rerank: dict[str, float] = {}  # page_id → rerank_score (정렬·필터 기준)
-    page_rrf:    dict[str, float] = {}  # page_id → RRF score (UI 표시용)
-    for hit in hits:
-        pid    = hit["metadata"].get("page_id", "")
-        rscore = hit.get("rerank_score", hit["score"])
-        if pid and rscore > page_rerank.get(pid, float("-inf")):
-            page_rerank[pid] = rscore
-            page_rrf[pid]    = hit["score"]
-
-    # 임계값 필터: 관련성 낮은 페이지 제거 (단, 결과가 전혀 없으면 1위 페이지는 유지)
-    page_rerank = {pid: s for pid, s in page_rerank.items() if s > RERANK_THRESHOLD}
-    if not page_rerank and hits:
-        pid = hits[0]["metadata"].get("page_id", "")
-        page_rerank = {pid: hits[0].get("rerank_score", 0.0)}
-
-    # rerank_score 내림차순으로 상위 top_k 페이지만 유지
-    sorted_pages = sorted(page_rerank.items(), key=lambda x: x[1], reverse=True)[:top_k]
-    page_rerank  = dict(sorted_pages)
-    page_rrf     = {pid: s for pid, s in page_rrf.items() if pid in page_rerank}
-
-    # 선정된 페이지의 모든 청크 조회 후 점수 복원
-    all_chunks = fetch_all_chunks_for_pages(list(page_rerank.keys()), col_name)
-    for chunk in all_chunks:
-        pid = chunk["metadata"].get("page_id", "")
-        chunk["score"]        = page_rrf.get(pid, 0.0)      # UI 표시용 RRF 점수
-        chunk["rerank_score"] = page_rerank.get(pid, 0.0)   # 정렬용 rerank 점수
-
-    return {"context": all_chunks}
+    return {"context": chunks}
 
 
 def _aggregate_by_page(chunks: list[dict]) -> list[dict]:

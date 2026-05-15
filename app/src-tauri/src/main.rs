@@ -132,6 +132,7 @@ async fn run_python(
         let e2 = event_name.clone();
         let t2 = std::thread::spawn(move || {
             for line in BufReader::new(stderr).lines().flatten() {
+                if line.contains("telemetry") { continue; }
                 let _ = w2.emit(&e2, format!("[ERR] {}", line));
             }
         });

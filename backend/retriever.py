@@ -145,6 +145,61 @@ def rrf_fusion(v_hits: list, b_hits: list, alpha: float, top_k: int) -> list[dic
     ]
 
 
+def search_rerank_fetch(
+    query:           str,
+    collection_name: str | None = None,
+    top_k:           int        = 5,
+    alpha:           float      = 0.4,
+) -> list[dict]:
+    """
+    검색 → 리랭킹 → 페이지 선택 → 전체 청크 조회를 한 번에 수행.
+    search_once.py(검색 탭)와 nodes.py(챗봇)의 공통 파이프라인.
+
+    top_k       : 최종 참고할 페이지 수 (내부적으로 RERANK_FETCH_K개 후보를 먼저 수집)
+    반환 청크마다 score(RRF 표시용), rerank_score(정렬용), vector_score, bm25_score 포함.
+    """
+    hits = search(query=query, collection_name=collection_name, top_k=RERANK_FETCH_K, alpha=alpha)
+    hits = rerank(query, hits)
+
+    # 페이지별 최고 점수 집계
+    page_rerank:  dict[str, float] = {}
+    page_rrf:     dict[str, float] = {}
+    page_vscores: dict[str, object] = {}
+    page_bscores: dict[str, object] = {}
+    for hit in hits:
+        pid    = hit["metadata"].get("page_id", "")
+        rscore = hit.get("rerank_score", hit["score"])
+        if pid and rscore > page_rerank.get(pid, float("-inf")):
+            page_rerank[pid]  = rscore
+            page_rrf[pid]     = hit["score"]
+            page_vscores[pid] = hit.get("vector_score")
+            page_bscores[pid] = hit.get("bm25_score")
+
+    # 임계값 필터 (결과 없으면 1위 페이지 유지)
+    page_rerank = {pid: s for pid, s in page_rerank.items() if s > RERANK_THRESHOLD}
+    if not page_rerank and hits:
+        pid = hits[0]["metadata"].get("page_id", "")
+        page_rerank = {pid: hits[0].get("rerank_score", 0.0)}
+
+    # rerank_score 내림차순 상위 top_k 페이지로 제한
+    sorted_pages = sorted(page_rerank.items(), key=lambda x: x[1], reverse=True)[:top_k]
+    page_rerank  = dict(sorted_pages)
+    page_rrf     = {pid: s for pid, s in page_rrf.items()     if pid in page_rerank}
+    page_vscores = {pid: v for pid, v in page_vscores.items() if pid in page_rerank}
+    page_bscores = {pid: b for pid, b in page_bscores.items() if pid in page_rerank}
+
+    # 선정된 페이지의 전체 청크 조회 후 점수 부여
+    all_chunks = fetch_all_chunks_for_pages(list(page_rerank.keys()), collection_name)
+    for chunk in all_chunks:
+        pid = chunk["metadata"].get("page_id", "")
+        chunk["score"]        = page_rrf.get(pid, 0.0)
+        chunk["rerank_score"] = page_rerank.get(pid, 0.0)
+        chunk["vector_score"] = page_vscores.get(pid)
+        chunk["bm25_score"]   = page_bscores.get(pid)
+
+    return all_chunks
+
+
 def rerank(query: str, hits: list[dict]) -> list[dict]:
     """
     cross-encoder로 (쿼리, 문서) 쌍을 재평가해 rerank_score 추가 후 내림차순 정렬.
@@ -168,12 +223,10 @@ def search(
     collection_name: str | None = None,
     top_k:           int        = 5,
     alpha:           float      = 0.4,
-    vector_query:    str | None = None,
 ) -> list[dict]:
     """
     하이브리드 검색 수행 후 청크 목록 반환 (리랭킹 미포함, 검색 탭에서 직접 사용).
-    query        : BM25 키워드 검색에 사용 (정제된 쿼리 권장)
-    vector_query : 벡터 검색에 사용 (없으면 query 그대로 사용)
+    query  : BM25·벡터 검색 공통 쿼리 (정제된 쿼리 권장)
     alpha=1.0 → 벡터 전용 / alpha=0.0 → BM25 전용 / 중간 → RRF 혼합
     """
     from sentence_transformers import SentenceTransformer
@@ -181,10 +234,9 @@ def search(
     collection = get_collection(collection_name)
     model      = SentenceTransformer(EMBEDDING_MODEL)
     fetch_n    = top_k * 3  # RRF 통합 품질을 위해 각 방법에서 top_k보다 많이 수집
-    v_query    = vector_query or query
 
     if alpha >= 1.0:
-        raw  = vector_search(v_query, collection, model, top_k)
+        raw  = vector_search(query, collection, model, top_k)
         return [
             {"document": h["document"], "metadata": h["metadata"],
              "score": round(h["score"], 4),
@@ -203,6 +255,6 @@ def search(
         ]
 
     bm25_body, bm25_title, bm25_breadcrumb, all_docs = build_bm25(collection)
-    v_hits = vector_search(v_query, collection, model, fetch_n)
+    v_hits = vector_search(query, collection, model, fetch_n)
     b_hits = bm25_search(query, bm25_body, bm25_title, bm25_breadcrumb, all_docs, fetch_n)
     return rrf_fusion(v_hits, b_hits, alpha, top_k)
