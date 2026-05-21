@@ -105,12 +105,15 @@ $PrevModels = Get-ChildItem "$Root\dist" -Directory -Filter "Confulence_v*" -Err
     Where-Object { $_.Name -ne "Confulence_v$Version" -and (Test-Path "$($_.FullName)\models") } |
     Sort-Object LastWriteTime | Select-Object -Last 1
 
-if ($PrevModels) {
+$prevModelsHasContent = $PrevModels -and (Get-ChildItem "$($PrevModels.FullName)\models" -Recurse -File -ErrorAction SilentlyContinue | Select-Object -First 1)
+
+if ($prevModelsHasContent) {
     Write-Host "  이전 빌드에서 모델 복사 중: $($PrevModels.Name)\models ..."
     Copy-Item "$($PrevModels.FullName)\models\*" "$Dist\models" -Recurse -Force
     Write-Host "  모델 복사 완료"
 } else {
-    Write-Host "  이전 빌드 없음 - HuggingFace에서 다운로드 중..."
+    if ($PrevModels) { Write-Host "  이전 빌드 models 폴더가 비어있음 - 새로 다운로드합니다" }
+    if (-not $PrevModels) { Write-Host "  이전 빌드 없음 - HuggingFace에서 다운로드 중..." }
     $DownloadScript = @"
 import os
 os.environ['HF_HOME'] = r'$Dist\models'
@@ -126,7 +129,10 @@ from sentence_transformers import CrossEncoder
 CrossEncoder('cross-encoder/mmarco-mMiniLMv2-L12-H384-v1')
 print('  완료')
 "@
-    $DownloadScript | & "$Dist\python\python.exe" -
+    $TempScript = "$env:TEMP\download_models.py"
+    [System.IO.File]::WriteAllText($TempScript, $DownloadScript, [System.Text.UTF8Encoding]::new($false))
+    & "$Dist\python\python.exe" $TempScript
+    Remove-Item $TempScript
 }
 
 # ── 4. 앱 파일 복사 ───────────────────────────────────────────────────────────

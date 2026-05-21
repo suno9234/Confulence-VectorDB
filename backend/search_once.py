@@ -10,6 +10,9 @@ search_once.py — Tauri 앱에서 호출하는 단일 검색 스크립트
 """
 
 import sys
+
+sys.stdout.reconfigure(line_buffering=True)
+
 import json
 import os
 from dotenv import load_dotenv

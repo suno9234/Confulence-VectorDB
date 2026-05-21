@@ -7,7 +7,13 @@ retriever.py — 하이브리드 검색 엔진 (벡터 + BM25 + 리랭킹)
 
 import os
 from dotenv import load_dotenv
-load_dotenv()
+
+_base = os.path.dirname(os.path.abspath(__file__))
+load_dotenv(os.path.join(_base, ".env"))
+
+# 로컬 모델 캐시만 사용 (HuggingFace 네트워크 접근 차단)
+os.environ.setdefault("HF_HUB_OFFLINE",      "1")
+os.environ.setdefault("TRANSFORMERS_OFFLINE", "1")
 
 # ── ChromaDB 경로 및 컬렉션 설정 ──────────────────────────────────────────────
 VECTOR_DB_PATH  = os.getenv("VECTOR_DB_PATH",  "./vector_db")   # ChromaDB 저장 디렉터리

@@ -20,6 +20,10 @@ import os
 from dotenv import load_dotenv
 load_dotenv()
 
+# 로컬 모델 캐시만 사용 (HuggingFace 네트워크 접근 차단)
+os.environ.setdefault("HF_HUB_OFFLINE",      "1")
+os.environ.setdefault("TRANSFORMERS_OFFLINE", "1")
+
 import requests
 import chromadb
 from bs4 import BeautifulSoup
@@ -29,7 +33,8 @@ BASE_URL        = os.environ["CONFLUENCE_BASE_URL"].rstrip("/")
 EMAIL           = os.environ["CONFLUENCE_EMAIL"]
 TOKEN           = os.environ["CONFLUENCE_API_TOKEN"]
 SPACE_KEY       = os.environ["CONFLUENCE_SPACE_KEY"]
-EMBEDDING_MODEL = os.getenv("EMBEDDING_MODEL", "all-MiniLM-L6-v2")
+ROOT_PAGE_ID    = os.environ["ROOT_PAGE_ID"]
+EMBEDDING_MODEL = os.getenv("EMBEDDING_MODEL", "jhgan/ko-sroberta-multitask")
 VECTOR_DB_PATH  = os.getenv("VECTOR_DB_PATH", "./vector_db")
 CHUNK_SIZE      = int(os.getenv("CHUNK_SIZE", "500"))
 CHUNK_OVERLAP   = int(os.getenv("CHUNK_OVERLAP", "50"))
@@ -38,47 +43,54 @@ COLLECTION_NAME = f"{os.getenv('VECTOR_DB_COLLECTION', 'confluence')}_{CHUNK_SIZ
 CONFLUENCE_FETCH_LIMIT    = int(os.getenv("CONFLUENCE_FETCH_LIMIT",    "50"))  # 배치당 페이지 수 (v1 API 최대 50)
 CONFLUENCE_REQUEST_DELAY  = float(os.getenv("CONFLUENCE_REQUEST_DELAY", "1.0")) # 배치 요청 사이 대기 시간 (초)
 
-AUTH    = (EMAIL, TOKEN)
-HEADERS = {"Accept": "application/json"}
+HEADERS = {
+    "Accept": "application/json",
+    "Authorization": f"Bearer {TOKEN}"
+}
+
 
 
 # ── Confluence API v1 (expand 지원으로 한 번에 모든 정보 수집) ─────────────────
 
 def fetch_all_pages():
-    """Space 내 모든 페이지를 페이지네이션으로 전부 수집합니다."""
     import time
+    pages = []
+    visited = set()  # 방문한 페이지 ID 추적
 
-    pages       = []
-    start       = 0
-    params_base = {
-        "spaceKey": SPACE_KEY,
-        "type":     "page",
-        "status":   "current",
-        "expand":   "ancestors,version,body.storage,metadata.labels",
-        "limit":    CONFLUENCE_FETCH_LIMIT,
-    }
+    def fetch_children(page_id):
+        if page_id in visited:  # 이미 방문했으면 스킵
+            return
+        visited.add(page_id)
+        
+        start = 0
+        while True:
+            resp = requests.get(
+                f"{BASE_URL}/wiki2/rest/api/content/{page_id}/child/page",
+                headers=HEADERS,
+                params={
+                    "expand": "ancestors,version,body.storage,metadata.labels",
+                    "limit": CONFLUENCE_FETCH_LIMIT,
+                    "start": start
+                },
+                timeout=30
+            )
+            resp.raise_for_status()
+            data = resp.json()
+            results = data.get("results", [])
 
-    while True:
-        params = {**params_base, "start": start}
-        resp   = requests.get(
-            f"{BASE_URL}/wiki/rest/api/content",
-            auth=AUTH, headers=HEADERS, params=params
-        )
-        resp.raise_for_status()
-        data    = resp.json()
-        results = data.get("results", [])
-        pages.extend(results)
+            for child in results:
+                pages.append(child)
+                print(f" 수집 중... 누적 {len(pages)}개: {child['title']}")
+                fetch_children(child["id"])
 
-        print(f"  수집 중... 누적 {len(pages)}개 (이번 배치: {len(results)}개)")
+            if not data.get("_links", {}).get("next"):
+                break
+            start += CONFLUENCE_FETCH_LIMIT
 
-        # _links.next 없으면 마지막 페이지
-        if not data.get("_links", {}).get("next"):
-            break
+            if CONFLUENCE_REQUEST_DELAY > 0:
+                time.sleep(CONFLUENCE_REQUEST_DELAY)
 
-        start += CONFLUENCE_FETCH_LIMIT
-        if CONFLUENCE_REQUEST_DELAY > 0:
-            time.sleep(CONFLUENCE_REQUEST_DELAY)
-
+    fetch_children(ROOT_PAGE_ID)
     return pages
 
 
