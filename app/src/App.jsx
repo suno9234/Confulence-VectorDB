@@ -281,7 +281,7 @@ export default function App() {
       } else {
         pageMap[id].chunkCount++
         pageMap[id].chunks.push(hit)
-        if (hit.score > pageMap[id].best.score) pageMap[id].best = hit
+        if ((hit.rerank_score ?? hit.score) > (pageMap[id].best.rerank_score ?? pageMap[id].best.score)) pageMap[id].best = hit
       }
     })
     return Object.values(pageMap)
@@ -294,11 +294,12 @@ export default function App() {
           chunkCount:   page.chunkCount,
           document:     sorted.map(c => c.document).join('\n\n'),
           score:        page.best.score,
+          rerank_score: page.best.rerank_score,
           vector_score: page.best.vector_score,
           bm25_score:   page.best.bm25_score,
         }
       })
-      .sort((a, b) => b.score - a.score)
+      .sort((a, b) => (b.rerank_score ?? b.score) - (a.rerank_score ?? a.score))
   }
 
   const displayResults = viewMode === 'page' ? aggregateByPage(results) : results

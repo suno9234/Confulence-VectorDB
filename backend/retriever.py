@@ -203,6 +203,11 @@ def search_rerank_fetch(
         chunk["vector_score"] = page_vscores.get(pid)
         chunk["bm25_score"]   = page_bscores.get(pid)
 
+    # rerank_score 내림차순 → 같은 페이지 내에서는 chunk_index 오름차순
+    all_chunks.sort(key=lambda c: (
+        -page_rerank.get(c["metadata"].get("page_id", ""), 0.0),
+        int(c["metadata"].get("chunk_index", 0)),
+    ))
     return all_chunks
 
 
@@ -238,6 +243,8 @@ def search(
     from sentence_transformers import SentenceTransformer
 
     collection = get_collection(collection_name)
+    if collection.count() == 0:
+        raise ValueError("컬렉션이 비어 있습니다. 먼저 임베딩을 실행하세요.")
     model      = SentenceTransformer(EMBEDDING_MODEL)
     fetch_n    = top_k * 3  # RRF 통합 품질을 위해 각 방법에서 top_k보다 많이 수집
 
