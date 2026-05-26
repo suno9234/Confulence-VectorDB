@@ -350,6 +350,36 @@ body {
   padding: 4px 2px;
 }
 
+.chat-server-loading {
+  text-align: center;
+  color: #9ca3af;
+  font-size: 13px;
+  padding: 20px 0;
+  animation: pulse 1.5s ease-in-out infinite;
+}
+
+.chat-prev-history {
+  text-align: center;
+  font-size: 12.5px;
+  color: #6b7280;
+  background: #f8fafc;
+  border: 1px solid #e5e7eb;
+  border-radius: 8px;
+  padding: 10px 16px;
+  margin: 8px 0;
+}
+
+.btn-link {
+  background: none;
+  border: none;
+  color: #2563eb;
+  font-size: inherit;
+  cursor: pointer;
+  padding: 0;
+  text-decoration: underline;
+}
+.btn-link:hover { color: #1d4ed8; }
+
 .chat-placeholder {
   color: #9ca3af;
   font-style: italic;

@@ -7,6 +7,9 @@ dist/
 # 벡터 DB (embed_pages.py로 재생성)
 vector_db/
 
+# 챗봇 대화 기록 (사용자 데이터)
+chat_history.json
+
 # 임베딩 모델 (빌드 시 HuggingFace에서 다운로드)
 models/
 
