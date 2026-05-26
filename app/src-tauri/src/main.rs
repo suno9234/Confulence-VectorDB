@@ -206,67 +206,6 @@ async fn delete_collection(cwd: String, collection: String) -> Result<String, St
     .map_err(|e| e.to_string())?
 }
 
-// ── 챗봇 (chat.py 스트리밍 호출) ─────────────────────────────────────────────
-
-#[tauri::command]
-async fn run_chat(
-    window: tauri::Window,
-    question: String,
-    cwd: String,
-    collection: String,
-    top_k: u32,
-    alpha: f64,
-) -> Result<(), String> {
-    tauri::async_runtime::spawn_blocking(move || {
-        let python = resolve_python(&cwd);
-        let models_dir = format!("{}\\models", cwd);
-
-        let mut child = std::process::Command::new(&python)
-            .arg("backend/chat.py")
-            .arg(&question)
-            .arg(&collection)
-            .arg(top_k.to_string())
-            .arg(alpha.to_string())
-            .arg("--stream")
-            .current_dir(&cwd)
-            .env("HF_HOME", &models_dir)
-            .env("SENTENCE_TRANSFORMERS_HOME", &models_dir)
-            .env("HF_HUB_OFFLINE", "1")
-            .env("TRANSFORMERS_OFFLINE", "1")
-            .env("PYTHONIOENCODING", "utf-8")
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .creation_flags(CREATE_NO_WINDOW)
-            .spawn()
-            .map_err(|e| format!("chat.py 실행 실패: {}", e))?;
-
-        let stdout = child.stdout.take().unwrap();
-        let stderr = child.stderr.take().unwrap();
-
-        let w1 = window.clone();
-        let t1 = std::thread::spawn(move || {
-            for line in BufReader::new(stdout).lines().flatten() {
-                let _ = w1.emit("chat_output", &line);
-            }
-        });
-
-        let w2 = window.clone();
-        let t2 = std::thread::spawn(move || {
-            for line in BufReader::new(stderr).lines().flatten() {
-                let _ = w2.emit("chat_output", format!("__ERR__{}", line));
-            }
-        });
-
-        let _ = child.wait();
-        let _ = t1.join();
-        let _ = t2.join();
-
-        Ok::<(), String>(())
-    })
-    .await
-    .map_err(|e| e.to_string())?
-}
-
 // ── 검색 (search_once.py 호출 → JSON 반환) ───────────────────────────────────
 
 #[tauri::command]
@@ -314,15 +253,15 @@ struct ChatState(Arc<Mutex<Option<ChatProcess>>>);
 async fn start_chat_server(
     state: tauri::State<'_, ChatState>,
     cwd: String,
-) -> Result<(), String> {
+) -> Result<String, String> {
     let arc = Arc::clone(&state.0);
     tauri::async_runtime::spawn_blocking(move || {
         let mut guard = arc.lock().map_err(|e| e.to_string())?;
 
-        // 이미 살아있으면 스킵
+        // 이미 살아있으면 스킵 (has_history 없이 빈 JSON 반환)
         if let Some(ref mut chat) = *guard {
             if chat.child.try_wait().map_err(|e| e.to_string())?.is_none() {
-                return Ok(());
+                return Ok("{}".to_string());
             }
         }
 
@@ -331,6 +270,7 @@ async fn start_chat_server(
 
         let mut child = std::process::Command::new(&python)
             .arg("backend/chat_server.py")
+            .arg(&cwd)  // cwd를 인자로 전달 → 히스토리 파일 경로 결정에 사용
             .current_dir(&cwd)
             .env("HF_HOME", &models_dir)
             .env("SENTENCE_TRANSFORMERS_HOME", &models_dir)
@@ -364,16 +304,20 @@ async fn start_chat_server(
             child,
         };
 
-        // {"status": "ready"} 수신까지 대기
+        // {"status": "ready", "has_history": ..., "turns": ...} 수신까지 대기
+        let mut ready_line = String::new();
         let mut line = String::new();
         loop {
             line.clear();
             if chat.stdout.read_line(&mut line).unwrap_or(0) == 0 { break; }
-            if line.contains("\"ready\"") { break; }
+            if line.contains("\"ready\"") {
+                ready_line = line.trim().to_string();
+                break;
+            }
         }
 
         *guard = Some(chat);
-        Ok::<(), String>(())
+        Ok::<String, String>(ready_line)
     })
     .await
     .map_err(|e| e.to_string())?
@@ -465,7 +409,6 @@ fn main() {
             read_env,
             save_env,
             run_python,
-            run_chat,
             run_search,
             list_collections,
             delete_collection,
