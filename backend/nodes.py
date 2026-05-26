@@ -7,6 +7,8 @@ nodes.py — LangGraph 파이프라인 노드 함수 정의
 
 from typing import TypedDict
 
+from langchain_core.messages import HumanMessage, AIMessage
+
 from retriever import search_rerank_fetch, COLLECTION_NAME
 from prompts   import REFINE_PROMPT, RAG_PROMPT
 from llm       import get_llm
@@ -21,17 +23,32 @@ class State(TypedDict):
     alpha:          float      # BM25·벡터 비율 (0=BM25 전용, 1=벡터 전용)
     context:        list[dict] # retrieve_node가 수집한 청크 목록
     answer:         str        # generate_node가 생성한 최종 답변
+    history:        list[dict] # 대화 기록 [{"role": "user"/"assistant", "content": "..."}]
+
+
+def _to_lc_messages(history: list[dict]) -> list:
+    """dict 형태의 히스토리를 LangChain 메시지 객체로 변환."""
+    msgs = []
+    for h in history:
+        if h["role"] == "user":
+            msgs.append(HumanMessage(content=h["content"]))
+        else:
+            msgs.append(AIMessage(content=h["content"]))
+    return msgs
 
 
 def refine_node(state: State) -> dict:
     """
     사용자 질문을 검색에 적합한 짧은 키워드 쿼리로 변환.
-    구어체·문맥 제거 → 핵심 명사 위주 10단어 이내 텍스트 출력.
+    대화 기록이 있으면 맥락을 반영해 지시어를 구체적인 키워드로 치환.
     """
     chain   = REFINE_PROMPT | get_llm()
-    result  = chain.invoke({"question": state["question"]})
+    result  = chain.invoke({
+        "question": state["question"],
+        "history":  _to_lc_messages(state.get("history", [])),
+    })
     refined = result.content.strip()
-    return {"refined_query": refined or state["question"]}  # 빈 결과면 원본 질문 사용
+    return {"refined_query": refined or state["question"]}
 
 
 def retrieve_node(state: State) -> dict:
@@ -86,7 +103,7 @@ def _aggregate_by_page(chunks: list[dict]) -> list[dict]:
 def generate_node(state: State) -> dict:
     """
     수집된 청크를 페이지 단위로 묶어 LLM에 전달하고 최종 답변을 생성.
-    문서는 [제목] + 본문 형태로 구분자(---)와 함께 연결해 LLM에 제공.
+    대화 기록을 함께 전달해 이전 맥락을 유지한다.
     """
     pages        = _aggregate_by_page(state["context"])
     context_text = "\n\n---\n\n".join(
@@ -97,5 +114,6 @@ def generate_node(state: State) -> dict:
     response = chain.invoke({
         "context":  context_text,
         "question": state["question"],
+        "history":  _to_lc_messages(state.get("history", [])),
     })
     return {"answer": response.content}

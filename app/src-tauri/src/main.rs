@@ -2,8 +2,9 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 use std::collections::HashMap;
-use std::io::{BufRead, BufReader};
+use std::io::{BufRead, BufReader, BufWriter, Write};
 use std::process::Stdio;
+use std::sync::{Arc, Mutex};
 #[cfg(windows)]
 use std::os::windows::process::CommandExt;
 
@@ -296,10 +297,169 @@ async fn run_search(query: String, cwd: String, top_k: u32, collection: String, 
     .map_err(|e| e.to_string())?
 }
 
+// ── 챗봇 상주 서버 상태 ───────────────────────────────────────────────────────
+
+struct ChatProcess {
+    stdin:  BufWriter<std::process::ChildStdin>,
+    stdout: BufReader<std::process::ChildStdout>,
+    child:  std::process::Child,
+}
+
+#[derive(Clone)]
+struct ChatState(Arc<Mutex<Option<ChatProcess>>>);
+
+// ── 챗봇 서버 시작 (모델 로드 완료까지 대기) ──────────────────────────────────
+
+#[tauri::command]
+async fn start_chat_server(
+    state: tauri::State<'_, ChatState>,
+    cwd: String,
+) -> Result<(), String> {
+    let arc = Arc::clone(&state.0);
+    tauri::async_runtime::spawn_blocking(move || {
+        let mut guard = arc.lock().map_err(|e| e.to_string())?;
+
+        // 이미 살아있으면 스킵
+        if let Some(ref mut chat) = *guard {
+            if chat.child.try_wait().map_err(|e| e.to_string())?.is_none() {
+                return Ok(());
+            }
+        }
+
+        let python     = resolve_python(&cwd);
+        let models_dir = format!("{}\\models", cwd);
+
+        let mut child = std::process::Command::new(&python)
+            .arg("backend/chat_server.py")
+            .current_dir(&cwd)
+            .env("HF_HOME", &models_dir)
+            .env("SENTENCE_TRANSFORMERS_HOME", &models_dir)
+            .env("HF_HUB_OFFLINE", "1")
+            .env("TRANSFORMERS_OFFLINE", "1")
+            .env("PYTHONIOENCODING", "utf-8")
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .creation_flags(CREATE_NO_WINDOW)
+            .spawn()
+            .map_err(|e| format!("챗봇 서버 시작 실패: {}", e))?;
+
+        let stdin  = child.stdin.take().unwrap();
+        let stdout = child.stdout.take().unwrap();
+
+        // stderr는 별도 스레드에서 드레인 (텔레메트리 제외)
+        if let Some(stderr) = child.stderr.take() {
+            std::thread::spawn(move || {
+                for line in BufReader::new(stderr).lines().flatten() {
+                    if !line.contains("telemetry") {
+                        eprintln!("[chat_server] {}", line);
+                    }
+                }
+            });
+        }
+
+        let mut chat = ChatProcess {
+            stdin:  BufWriter::new(stdin),
+            stdout: BufReader::new(stdout),
+            child,
+        };
+
+        // {"status": "ready"} 수신까지 대기
+        let mut line = String::new();
+        loop {
+            line.clear();
+            if chat.stdout.read_line(&mut line).unwrap_or(0) == 0 { break; }
+            if line.contains("\"ready\"") { break; }
+        }
+
+        *guard = Some(chat);
+        Ok::<(), String>(())
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+// ── 챗봇 메시지 전송 (stdin → stdout 스트리밍) ───────────────────────────────
+
+#[tauri::command]
+async fn send_chat_message(
+    window: tauri::Window,
+    state: tauri::State<'_, ChatState>,
+    question: String,
+    collection: String,
+    top_k: u32,
+    alpha: f64,
+) -> Result<(), String> {
+    let arc = Arc::clone(&state.0);
+    tauri::async_runtime::spawn_blocking(move || {
+        let mut guard = arc.lock().map_err(|e| e.to_string())?;
+        let chat = guard.as_mut()
+            .ok_or("챗봇 서버가 실행되지 않았습니다.")?;
+
+        if chat.child.try_wait().map_err(|e| e.to_string())?.is_some() {
+            return Err("챗봇 서버가 종료되었습니다. 앱을 재시작하세요.".to_string());
+        }
+
+        // 질문 전송
+        let msg = serde_json::json!({
+            "question":   question,
+            "collection": collection,
+            "top_k":      top_k,
+            "alpha":      alpha,
+        });
+        writeln!(chat.stdin, "{}", msg).map_err(|e| e.to_string())?;
+        chat.stdin.flush().map_err(|e| e.to_string())?;
+
+        // 응답 스트리밍
+        let mut line = String::new();
+        loop {
+            line.clear();
+            if chat.stdout.read_line(&mut line).map_err(|e| e.to_string())? == 0 { break; }
+            let trimmed = line.trim();
+            if trimmed.is_empty() { continue; }
+            let _ = window.emit("chat_output", trimmed);
+            if let Ok(v) = serde_json::from_str::<serde_json::Value>(trimmed) {
+                if v.get("done").and_then(|d| d.as_bool()).unwrap_or(false) { break; }
+            }
+        }
+        Ok::<(), String>(())
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+// ── 대화 히스토리 초기화 ─────────────────────────────────────────────────────
+
+#[tauri::command]
+async fn reset_chat_history(
+    state: tauri::State<'_, ChatState>,
+) -> Result<(), String> {
+    let arc = Arc::clone(&state.0);
+    tauri::async_runtime::spawn_blocking(move || {
+        let mut guard = arc.lock().map_err(|e| e.to_string())?;
+        let chat = guard.as_mut()
+            .ok_or("챗봇 서버가 실행되지 않았습니다.")?;
+
+        writeln!(chat.stdin, "{{\"cmd\":\"reset\"}}").map_err(|e| e.to_string())?;
+        chat.stdin.flush().map_err(|e| e.to_string())?;
+
+        let mut line = String::new();
+        loop {
+            line.clear();
+            if chat.stdout.read_line(&mut line).unwrap_or(0) == 0 { break; }
+            if line.contains("\"done\"") { break; }
+        }
+        Ok::<(), String>(())
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
 // ── 메인 ─────────────────────────────────────────────────────────────────────
 
 fn main() {
     tauri::Builder::default()
+        .manage(ChatState(Arc::new(Mutex::new(None))))
         .invoke_handler(tauri::generate_handler![
             get_exe_dir,
             read_env,
@@ -309,6 +469,9 @@ fn main() {
             run_search,
             list_collections,
             delete_collection,
+            start_chat_server,
+            send_chat_message,
+            reset_chat_history,
         ])
         .run(tauri::generate_context!())
         .expect("Tauri 앱 실행 오류");

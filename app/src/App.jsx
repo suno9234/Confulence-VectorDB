@@ -43,12 +43,14 @@ export default function App() {
   const outputRef = useRef(null)
 
   // ── 챗봇 ──
-  const [chatMessages, setChatMessages] = useState([])
-  const [chatInput, setChatInput]       = useState('')
-  const [chatting, setChatting]         = useState(false)
-  const [chatCol, setChatCol]           = useState('')
-  const [chatTopK, setChatTopK]         = useState(5)
-  const [chatAlpha, setChatAlpha]       = useState(0.4)
+  const [chatMessages, setChatMessages]     = useState([])
+  const [chatInput, setChatInput]           = useState('')
+  const [chatting, setChatting]             = useState(false)
+  const [chatCol, setChatCol]               = useState('')
+  const [chatTopK, setChatTopK]             = useState(5)
+  const [chatAlpha, setChatAlpha]           = useState(0.4)
+  const [chatServerReady, setChatServerReady] = useState(false)
+  const [chatServerLoading, setChatServerLoading] = useState(false)
   const chatEndRef = useRef(null)
 
   useEffect(() => {
@@ -71,6 +73,15 @@ export default function App() {
 
   useEffect(() => {
     if ((tab === 'search' || tab === 'run' || tab === 'chat') && projectDir) loadCollections()
+  }, [tab, projectDir])
+
+  useEffect(() => {
+    if (tab === 'chat' && projectDir && !chatServerReady && !chatServerLoading) {
+      setChatServerLoading(true)
+      invoke('start_chat_server', { cwd: projectDir })
+        .then(() => { setChatServerReady(true); setChatServerLoading(false) })
+        .catch(e => { setChatServerLoading(false); console.error(e) })
+    }
   }, [tab, projectDir])
 
   useEffect(() => {
@@ -114,9 +125,17 @@ export default function App() {
     }
   }
 
+  async function resetChat() {
+    setChatMessages([])
+    if (chatServerReady) {
+      await invoke('reset_chat_history').catch(console.error)
+    }
+  }
+
   async function sendChat() {
     if (!projectDir) return alert('프로젝트 폴더를 먼저 선택하세요')
     if (!chatInput.trim() || chatting) return
+    if (!chatServerReady) return alert('챗봇 서버 로딩 중입니다. 잠시 후 다시 시도하세요.')
 
     const question = chatInput.trim()
     setChatInput('')
@@ -176,9 +195,8 @@ export default function App() {
     })
 
     try {
-      await invoke('run_chat', {
+      await invoke('send_chat_message', {
         question,
-        cwd:        projectDir,
         collection: chatCol || collections[0] || '',
         topK:       chatTopK,
         alpha:      chatAlpha,
@@ -595,12 +613,17 @@ export default function App() {
               <select className="topk-select" value={chatTopK} onChange={e => setChatTopK(Number(e.target.value))}>
                 {[3, 5, 10].map(n => <option key={n} value={n}>참고 {n}개</option>)}
               </select>
-              <button className="btn-sm" onClick={() => setChatMessages([])}>지우기</button>
+              <button className="btn-sm" onClick={resetChat} disabled={chatting}>새 대화</button>
             </div>
+
+            {/* 서버 로딩 상태 */}
+            {chatServerLoading && (
+              <div className="chat-server-loading">챗봇 모델 로딩 중...</div>
+            )}
 
             {/* 메시지 영역 */}
             <div className="chat-messages">
-              {chatMessages.length === 0 && (
+              {chatMessages.length === 0 && !chatServerLoading && (
                 <div className="chat-placeholder">질문을 입력하면 Confluence 문서 기반으로 답변합니다</div>
               )}
               {chatMessages.map((msg, i) => (

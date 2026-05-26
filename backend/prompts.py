@@ -3,16 +3,20 @@ prompts.py — LangChain 프롬프트 템플릿 정의
 
 REFINE_PROMPT : 사용자 질문 → 검색 키워드 변환 (refine_node에서 사용)
 RAG_PROMPT    : 검색된 문서 + 질문 → 최종 답변 생성 (generate_node에서 사용)
+
+히스토리는 LangChain 메시지 객체 리스트로 전달 (placeholder 방식).
 """
 
-from langchain_core.prompts import ChatPromptTemplate
+from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
 
 # 사용자 질문을 BM25·벡터 검색에 적합한 짧은 키워드로 변환하는 프롬프트
+# history가 있으면 맥락을 고려해 follow-up 질문도 올바른 검색어로 변환
 REFINE_PROMPT = ChatPromptTemplate.from_messages([
     ("system", """\
 아래 질문에 답하는 문서를 찾기 위한 검색 쿼리를 생성하세요.
 
 - 핵심 명사와 키워드 위주로 간결하게 작성하세요 (10단어 이내)
+- 대화 기록이 있으면 맥락을 파악해 지시어("그거", "거기", "위에서")를 구체적인 키워드로 바꾸세요
 - 질문에 없는 내용은 추가하지 마세요.
 - 검색 쿼리 텍스트만 출력하세요 (설명, 따옴표 없이)
 
@@ -26,6 +30,7 @@ REFINE_PROMPT = ChatPromptTemplate.from_messages([
   입력: 재택근무 신청은 어떻게 하면 돼?
   출력: 재택근무 신청\
 """),
+    MessagesPlaceholder(variable_name="history", optional=True),
     ("human", "{question}"),
 ])
 
@@ -53,5 +58,6 @@ SYSTEM_PROMPT = """\
 
 RAG_PROMPT = ChatPromptTemplate.from_messages([
     ("system", SYSTEM_PROMPT),
+    MessagesPlaceholder(variable_name="history", optional=True),
     ("human", "{question}"),
 ])

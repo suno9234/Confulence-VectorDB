@@ -34,6 +34,24 @@ RERANK_MODEL     = os.getenv("RERANK_MODEL", "cross-encoder/mmarco-mMiniLMv2-L12
 RERANK_FETCH_K   = int(os.getenv("RERANK_FETCH_K",   "20"))    # 리랭킹 전 초기 후보 청크 수
 RERANK_THRESHOLD = float(os.getenv("RERANK_THRESHOLD", "-1.0")) # 리랭킹 점수(로짓) 하한선. 이 값 미만 페이지는 제외
 
+# ── 모델 싱글턴 캐시 (chat_server에서 재사용) ──────────────────────────────────
+_embedding_model = None
+_rerank_model    = None
+
+def _get_embedding_model():
+    global _embedding_model
+    if _embedding_model is None:
+        from sentence_transformers import SentenceTransformer
+        _embedding_model = SentenceTransformer(EMBEDDING_MODEL)
+    return _embedding_model
+
+def _get_rerank_model():
+    global _rerank_model
+    if _rerank_model is None:
+        from sentence_transformers import CrossEncoder
+        _rerank_model = CrossEncoder(RERANK_MODEL)
+    return _rerank_model
+
 
 def get_collection(collection_name: str | None = None):
     """ChromaDB에서 지정한 컬렉션을 열어 반환."""
@@ -217,8 +235,7 @@ def rerank(query: str, hits: list[dict]) -> list[dict]:
     입력 문서는 breadcrumb + 제목 + 본문을 합쳐 문맥을 최대한 제공.
     rerank_score는 로짓값(범위 제한 없음): 0 이상이면 관련, -2~0이면 경계, -5 이하면 무관련.
     """
-    from sentence_transformers import CrossEncoder
-    model = CrossEncoder(RERANK_MODEL)
+    model = _get_rerank_model()
     pairs = [
         (query, f"{h['metadata'].get('breadcrumb', '')}\n{h['metadata'].get('title', '')}\n{h['document']}")
         for h in hits
@@ -240,12 +257,10 @@ def search(
     query  : BM25·벡터 검색 공통 쿼리 (정제된 쿼리 권장)
     alpha=1.0 → 벡터 전용 / alpha=0.0 → BM25 전용 / 중간 → RRF 혼합
     """
-    from sentence_transformers import SentenceTransformer
-
     collection = get_collection(collection_name)
     if collection.count() == 0:
         raise ValueError("컬렉션이 비어 있습니다. 먼저 임베딩을 실행하세요.")
-    model      = SentenceTransformer(EMBEDDING_MODEL)
+    model      = _get_embedding_model()
     fetch_n    = top_k * 3  # RRF 통합 품질을 위해 각 방법에서 top_k보다 많이 수집
 
     if alpha >= 1.0:
