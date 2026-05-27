@@ -49,8 +49,10 @@ export default function App() {
   const [chatCol, setChatCol]               = useState('')
   const [chatTopK, setChatTopK]             = useState(5)
   const [chatAlpha, setChatAlpha]           = useState(0.4)
-  const [chatServerReady, setChatServerReady] = useState(false)
-  const [chatServerLoading, setChatServerLoading] = useState(false)
+  const [chatServerReady, setChatServerReady]       = useState(false)
+  const [chatServerLoading, setChatServerLoading]   = useState(false)
+  const [chatHasPrevHistory, setChatHasPrevHistory] = useState(false)
+  const [chatPrevTurns, setChatPrevTurns]           = useState(0)
   const chatEndRef = useRef(null)
 
   useEffect(() => {
@@ -79,7 +81,17 @@ export default function App() {
     if (tab === 'chat' && projectDir && !chatServerReady && !chatServerLoading) {
       setChatServerLoading(true)
       invoke('start_chat_server', { cwd: projectDir })
-        .then(() => { setChatServerReady(true); setChatServerLoading(false) })
+        .then(raw => {
+          try {
+            const info = JSON.parse(raw)
+            if (info.has_history) {
+              setChatHasPrevHistory(true)
+              setChatPrevTurns(info.turns || 0)
+            }
+          } catch (_) {}
+          setChatServerReady(true)
+          setChatServerLoading(false)
+        })
         .catch(e => { setChatServerLoading(false); console.error(e) })
     }
   }, [tab, projectDir])
@@ -127,6 +139,8 @@ export default function App() {
 
   async function resetChat() {
     setChatMessages([])
+    setChatHasPrevHistory(false)
+    setChatPrevTurns(0)
     if (chatServerReady) {
       await invoke('reset_chat_history').catch(console.error)
     }
@@ -616,9 +630,14 @@ export default function App() {
               <button className="btn-sm" onClick={resetChat} disabled={chatting}>새 대화</button>
             </div>
 
-            {/* 서버 로딩 상태 */}
+            {/* 서버 로딩 / 이전 대화 기록 알림 */}
             {chatServerLoading && (
               <div className="chat-server-loading">챗봇 모델 로딩 중...</div>
+            )}
+            {!chatServerLoading && chatHasPrevHistory && chatMessages.length === 0 && (
+              <div className="chat-prev-history">
+                이전 대화 기록이 있습니다 ({chatPrevTurns}턴) — 이어서 질문하거나 <button className="btn-link" onClick={resetChat}>새 대화</button>를 시작하세요.
+              </div>
             )}
 
             {/* 메시지 영역 */}

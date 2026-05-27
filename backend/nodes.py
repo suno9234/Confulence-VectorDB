@@ -7,7 +7,7 @@ nodes.py — LangGraph 파이프라인 노드 함수 정의
 
 from typing import TypedDict
 
-from langchain_core.messages import HumanMessage, AIMessage
+from langchain_core.messages import HumanMessage, AIMessage, SystemMessage
 
 from retriever import search_rerank_fetch, COLLECTION_NAME
 from prompts   import REFINE_PROMPT, RAG_PROMPT
@@ -27,10 +27,17 @@ class State(TypedDict):
 
 
 def _to_lc_messages(history: list[dict]) -> list:
-    """dict 형태의 히스토리를 LangChain 메시지 객체로 변환."""
+    """dict 형태의 히스토리를 LangChain 메시지 객체로 변환.
+    role: 'summary' → SystemMessage (과거 대화 요약)
+    role: 'user'    → HumanMessage
+    role: 'assistant' → AIMessage
+    """
     msgs = []
     for h in history:
-        if h["role"] == "user":
+        role = h["role"]
+        if role == "summary":
+            msgs.append(SystemMessage(content=h["content"]))
+        elif role == "user":
             msgs.append(HumanMessage(content=h["content"]))
         else:
             msgs.append(AIMessage(content=h["content"]))
