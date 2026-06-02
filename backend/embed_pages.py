@@ -20,13 +20,10 @@ import os
 from dotenv import load_dotenv
 load_dotenv()
 
-# 로컬 모델 캐시만 사용 (HuggingFace 네트워크 접근 차단)
-os.environ.setdefault("HF_HUB_OFFLINE",      "1")
-os.environ.setdefault("TRANSFORMERS_OFFLINE", "1")
 
 import requests
 import chromadb
-from bs4 import BeautifulSoup
+from bs4 import BeautifulSoup, NavigableString
 from sentence_transformers import SentenceTransformer
 
 BASE_URL        = os.environ["CONFLUENCE_BASE_URL"].rstrip("/")
@@ -34,7 +31,7 @@ EMAIL           = os.environ["CONFLUENCE_EMAIL"]
 TOKEN           = os.environ["CONFLUENCE_API_TOKEN"]
 SPACE_KEY       = os.environ["CONFLUENCE_SPACE_KEY"]
 ROOT_PAGE_ID    = os.environ["ROOT_PAGE_ID"]
-EMBEDDING_MODEL = os.getenv("EMBEDDING_MODEL", "jhgan/ko-sroberta-multitask")
+EMBEDDING_MODEL = os.getenv("EMBEDDING_MODEL", "BM-K/KoSimCSE-roberta-multitask")
 VECTOR_DB_PATH  = os.getenv("VECTOR_DB_PATH", "./vector_db")
 CHUNK_SIZE      = int(os.getenv("CHUNK_SIZE", "500"))
 CHUNK_OVERLAP   = int(os.getenv("CHUNK_OVERLAP", "50"))
@@ -43,9 +40,11 @@ COLLECTION_NAME = f"{os.getenv('VECTOR_DB_COLLECTION', 'confluence')}_{CHUNK_SIZ
 CONFLUENCE_FETCH_LIMIT    = int(os.getenv("CONFLUENCE_FETCH_LIMIT",    "50"))  # 배치당 페이지 수 (v1 API 최대 50)
 CONFLUENCE_REQUEST_DELAY  = float(os.getenv("CONFLUENCE_REQUEST_DELAY", "1.0")) # 배치 요청 사이 대기 시간 (초)
 
+import base64 as _b64
+_BASIC = _b64.b64encode(f"{EMAIL}:{TOKEN}".encode()).decode()
 HEADERS = {
-    "Accept": "application/json",
-    "Authorization": f"Bearer {TOKEN}"
+    "Accept":        "application/json",
+    "Authorization": f"Basic {_BASIC}",
 }
 
 
@@ -97,13 +96,63 @@ def fetch_all_pages():
 # ── 텍스트 처리 ───────────────────────────────────────────────────────────────
 
 def parse_html(html: str) -> str:
-    """Confluence storage format(XHTML)에서 순수 텍스트 추출"""
-    soup = BeautifulSoup(html, "lxml")
+    """Confluence storage format(XHTML)에서 텍스트 추출.
+
+    lxml-xml 파서로 ac:/ri: 네임스페이스와 CDATA를 정확히 처리.
+    - expand/panel/note/warning/info/tip: 제목 + 본문 보존
+    - code 블록: CDATA 내용 추출
+    - 표: 행·열 구조를 | 구분자로 유지
+    """
+    soup = BeautifulSoup(f"<root>{html}</root>", "lxml-xml")
+
+    # ── Confluence 매크로 ──────────────────────────────────────────────────────
+    for macro in soup.find_all("ac:structured-macro"):
+        name = macro.get("ac:name", "")
+
+        if name == "expand":
+            title_tag = macro.find("ac:parameter", {"ac:name": "title"})
+            title     = title_tag.get_text(strip=True) if title_tag else "접기/펼치기"
+            body      = macro.find("ac:rich-text-body")
+            body_text = body.get_text(separator="\n", strip=True) if body else ""
+            macro.replace_with(NavigableString(f"\n[{title}]\n{body_text}\n"))
+
+        elif name in ("panel", "note", "warning", "info", "tip"):
+            title_tag = macro.find("ac:parameter", {"ac:name": "title"})
+            title     = title_tag.get_text(strip=True) if title_tag else name
+            body      = macro.find("ac:rich-text-body")
+            body_text = body.get_text(separator="\n", strip=True) if body else ""
+            macro.replace_with(NavigableString(f"\n[{title}]\n{body_text}\n"))
+
+        elif name == "code":
+            body      = macro.find("ac:plain-text-body")
+            code_text = body.get_text(strip=True) if body else ""
+            macro.replace_with(NavigableString(f"\n{code_text}\n"))
+
+        else:
+            # 기타 매크로: 텍스트 추출 가능하면 추출, 없으면 제거
+            body = macro.find("ac:rich-text-body") or macro.find("ac:plain-text-body")
+            if body:
+                macro.replace_with(NavigableString("\n" + body.get_text(separator="\n", strip=True) + "\n"))
+            else:
+                macro.decompose()
+
+    # ── 표 → 파이프 구분 텍스트 ───────────────────────────────────────────────
+    for table in soup.find_all("table"):
+        rows = []
+        for tr in table.find_all("tr"):
+            cells = [cell.get_text(separator=" ", strip=True) for cell in tr.find_all(["th", "td"])]
+            if cells:
+                rows.append(" | ".join(cells))
+        replacement = "\n" + "\n".join(rows) + "\n" if rows else ""
+        table.replace_with(NavigableString(replacement))
+
     return soup.get_text(separator="\n", strip=True)
 
 
 def chunk_text(text: str) -> list[str]:
     """텍스트를 CHUNK_SIZE 글자 단위로 분할 (CHUNK_OVERLAP 글자 overlap)"""
+    if CHUNK_OVERLAP >= CHUNK_SIZE:
+        raise ValueError(f"CHUNK_OVERLAP({CHUNK_OVERLAP}) >= CHUNK_SIZE({CHUNK_SIZE}): 무한루프 발생")
     chunks  = []
     start   = 0
     length  = len(text)
@@ -113,7 +162,7 @@ def chunk_text(text: str) -> list[str]:
         chunks.append(text[start:end])
         if end == length:
             break
-        start = end - CHUNK_OVERLAP  # overlap 적용
+        start = end - CHUNK_OVERLAP
 
     return [c for c in chunks if c.strip()]
 
