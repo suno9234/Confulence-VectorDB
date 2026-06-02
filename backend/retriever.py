@@ -17,7 +17,7 @@ os.environ.setdefault("TRANSFORMERS_OFFLINE", "1")
 
 # ── ChromaDB 경로 및 컬렉션 설정 ──────────────────────────────────────────────
 VECTOR_DB_PATH  = os.getenv("VECTOR_DB_PATH",  "./vector_db")   # ChromaDB 저장 디렉터리
-EMBEDDING_MODEL = os.getenv("EMBEDDING_MODEL", "jhgan/ko-sroberta-multitask")  # 벡터 임베딩 모델
+EMBEDDING_MODEL = os.getenv("EMBEDDING_MODEL", "BM-K/KoSimCSE-roberta-multitask")  # 벡터 임베딩 모델
 CHUNK_SIZE      = int(os.getenv("CHUNK_SIZE",    "500"))         # 임베딩 당시 청크 크기 (컬렉션명에 포함)
 CHUNK_OVERLAP   = int(os.getenv("CHUNK_OVERLAP", "50"))          # 임베딩 당시 청크 오버랩 (컬렉션명에 포함)
 COLLECTION_NAME = f"{os.getenv('VECTOR_DB_COLLECTION', 'confluence')}_{CHUNK_SIZE}_{CHUNK_OVERLAP}"
@@ -37,6 +37,7 @@ RERANK_THRESHOLD = float(os.getenv("RERANK_THRESHOLD", "-1.0")) # 리랭킹 점�
 # ── 모델 싱글턴 캐시 (chat_server에서 재사용) ──────────────────────────────────
 _embedding_model = None
 _rerank_model    = None
+_kiwi            = None
 
 def _get_embedding_model():
     global _embedding_model
@@ -51,6 +52,20 @@ def _get_rerank_model():
         from sentence_transformers import CrossEncoder
         _rerank_model = CrossEncoder(RERANK_MODEL)
     return _rerank_model
+
+def _get_kiwi():
+    global _kiwi
+    if _kiwi is None:
+        from kiwipiepy import Kiwi
+        _kiwi = Kiwi()
+    return _kiwi
+
+# BM25에서 의미있는 품사만 추출 (명사·외래어 위주)
+_BM25_POS = frozenset({'NNG', 'NNP', 'NNB', 'NR', 'SL', 'SH'})
+
+def _tokenize(text: str) -> list[str]:
+    """Kiwi 형태소 분석으로 BM25용 토큰 추출. 띄어쓰기 불일치에 강건."""
+    return [t.form.lower() for t in _get_kiwi().tokenize(text) if t.tag in _BM25_POS]
 
 
 def get_collection(collection_name: str | None = None):
@@ -92,9 +107,9 @@ def build_bm25(collection):
         parts = bc.split(" > ")
         return " > ".join(parts[1:]) if len(parts) > 1 else ""
 
-    body_corpus       = [doc.lower().split() for doc in data["documents"]]
-    title_corpus      = [meta.get("title", "").lower().split() for meta in data["metadatas"]]
-    breadcrumb_corpus = [_strip_root(meta.get("breadcrumb", "")).lower().split() for meta in data["metadatas"]]
+    body_corpus       = [_tokenize(doc)                              for doc  in data["documents"]]
+    title_corpus      = [_tokenize(meta.get("title", ""))            for meta in data["metadatas"]]
+    breadcrumb_corpus = [_tokenize(_strip_root(meta.get("breadcrumb", ""))) for meta in data["metadatas"]]
     return BM25Okapi(body_corpus), BM25Okapi(title_corpus), BM25Okapi(breadcrumb_corpus), all_docs
 
 
@@ -127,7 +142,7 @@ def bm25_search(query: str, bm25_body, bm25_title, bm25_breadcrumb, all_docs: li
         m = arr.max()
         return arr / m if m > 0 else arr
 
-    tokens            = query.lower().split()
+    tokens            = _tokenize(query)
     body_scores       = _norm(np.array(bm25_body.get_scores(tokens)))
     title_scores      = _norm(np.array(bm25_title.get_scores(tokens)))
     breadcrumb_scores = _norm(np.array(bm25_breadcrumb.get_scores(tokens)))

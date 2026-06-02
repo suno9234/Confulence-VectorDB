@@ -6,11 +6,13 @@
 #   .\build_package.ps1 -Version "1.1.0"   # 버전 직접 지정
 #   .\build_package.ps1 -SkipTauriBuild    # Tauri 빌드 생략 (Rust 코드 미변경 시)
 #   .\build_package.ps1 -FreshPython       # Python/패키지 새로 설치 (requirements 변경 시)
+#   .\build_package.ps1 -FreshModels       # 임베딩 모델 새로 다운로드 (모델 변경 시)
 
 param(
     [string]$Version = "",
     [switch]$SkipTauriBuild,
-    [switch]$FreshPython
+    [switch]$FreshPython,
+    [switch]$FreshModels
 )
 
 [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
@@ -107,11 +109,12 @@ $PrevModels = Get-ChildItem "$Root\dist" -Directory -Filter "Confulence_v*" -Err
 
 $prevModelsHasContent = $PrevModels -and (Get-ChildItem "$($PrevModels.FullName)\models" -Recurse -File -ErrorAction SilentlyContinue | Select-Object -First 1)
 
-if ($prevModelsHasContent) {
+if ($prevModelsHasContent -and -not $FreshModels) {
     Write-Host "  이전 빌드에서 모델 복사 중: $($PrevModels.Name)\models ..."
     Copy-Item "$($PrevModels.FullName)\models\*" "$Dist\models" -Recurse -Force
     Write-Host "  모델 복사 완료"
 } else {
+    if ($FreshModels) { Write-Host "  -FreshModels 지정됨 - 새로 다운로드합니다" }
     if ($PrevModels) { Write-Host "  이전 빌드 models 폴더가 비어있음 - 새로 다운로드합니다" }
     if (-not $PrevModels) { Write-Host "  이전 빌드 없음 - HuggingFace에서 다운로드 중..." }
     $DownloadScript = @"
@@ -119,9 +122,9 @@ import os
 os.environ['HF_HOME'] = r'$Dist\models'
 os.environ['SENTENCE_TRANSFORMERS_HOME'] = r'$Dist\models'
 
-print('  ko-sroberta-multitask 다운로드 중...')
+print('  KoSimCSE-roberta-multitask 다운로드 중...')
 from sentence_transformers import SentenceTransformer
-SentenceTransformer('jhgan/ko-sroberta-multitask')
+SentenceTransformer('BM-K/KoSimCSE-roberta-multitask')
 print('  완료')
 
 print('  mmarco-mMiniLMv2 리랭커 다운로드 중...')
