@@ -1,0 +1,148 @@
+<p>Confluence 매크로 및 표 파싱 테스트 페이지입니다. expand·panel·info·warning·code 블록과 표가 임베딩 시 올바르게 추출되는지 확인합니다.</p>
+
+<h2>1. 표 (Table)</h2>
+<p>휴가 종류별 일수 요약입니다.</p>
+<table>
+  <tbody>
+    <tr>
+      <th>구분</th>
+      <th>일수</th>
+      <th>비고</th>
+    </tr>
+    <tr>
+      <td>연차휴가</td>
+      <td>15일</td>
+      <td>입사 1년 후 발생, 미사용 시 수당 지급</td>
+    </tr>
+    <tr>
+      <td>병가</td>
+      <td>3일 유급</td>
+      <td>진단서 제출 필요</td>
+    </tr>
+    <tr>
+      <td>경조사 휴가</td>
+      <td>결혼 5일 / 부모상 5일 / 배우자 출산 10일</td>
+      <td>HR 시스템 별도 신청</td>
+    </tr>
+    <tr>
+      <td>공가</td>
+      <td>해당 기간</td>
+      <td>병역·선거·재난 등 법정 사유</td>
+    </tr>
+  </tbody>
+</table>
+
+<h2>2. 접기/펼치기 (Expand)</h2>
+
+<ac:structured-macro ac:name="expand" ac:schema-version="1">
+  <ac:parameter ac:name="title">연차휴가 세부 산정 기준</ac:parameter>
+  <ac:rich-text-body>
+    <p>연차휴가는 근로기준법 제60조에 따라 아래와 같이 산정됩니다.</p>
+    <ul>
+      <li>입사 1년 미만: 월 개근 시 1일씩 최대 11일</li>
+      <li>입사 1년 이상 3년 미만: 15일</li>
+      <li>3년 이상 근속: 2년마다 1일 추가, 최대 25일</li>
+    </ul>
+    <p>연차 소진 순서: 이월 연차 → 당해 연차 순으로 자동 차감됩니다.</p>
+    <p>미사용 연차는 회계연도 종료 후 30일 이내에 수당으로 정산됩니다. 수당 단가는 통상임금 기준입니다.</p>
+  </ac:rich-text-body>
+</ac:structured-macro>
+
+<ac:structured-macro ac:name="expand" ac:schema-version="1">
+  <ac:parameter ac:name="title">재택근무 신청 절차 (단계별)</ac:parameter>
+  <ac:rich-text-body>
+    <p>재택근무 신청은 다음 절차를 따릅니다. 신청은 최소 전날 오전 10시까지 완료해야 합니다.</p>
+    <ol>
+      <li>사내 HR 포털(hr.nexusai.internal) 로그인</li>
+      <li>상단 메뉴 &gt; 근태관리 &gt; 재택근무 신청</li>
+      <li>날짜, 근무 장소, 사유 입력 후 제출</li>
+      <li>팀장 승인 완료 시 이메일 알림 수신</li>
+    </ol>
+    <p>월 최대 재택근무 일수는 12일이며, 수습 기간(3개월)에는 재택근무가 불가합니다.</p>
+  </ac:rich-text-body>
+</ac:structured-macro>
+
+<h2>3. 알림 영역 (Info / Warning / Panel)</h2>
+
+<ac:structured-macro ac:name="info" ac:schema-version="1">
+  <ac:parameter ac:name="title">VPN 접속 정보</ac:parameter>
+  <ac:rich-text-body>
+    <p>재택근무 및 외부 접속 시 GlobalProtect VPN을 반드시 사용해야 합니다.</p>
+    <ul>
+      <li>클라이언트: GlobalProtect 6.x (IT팀 배포본)</li>
+      <li>게이트웨이 주소: vpn.nexusai.internal</li>
+      <li>인증 방식: 사번 + OTP (Google Authenticator)</li>
+    </ul>
+  </ac:rich-text-body>
+</ac:structured-macro>
+
+<ac:structured-macro ac:name="warning" ac:schema-version="1">
+  <ac:parameter ac:name="title">보안 주의사항</ac:parameter>
+  <ac:rich-text-body>
+    <p>VPN 미접속 상태에서 사내 시스템 접근을 시도하면 보안 정책에 의해 자동 차단되며, 반복 시도 시 계정이 잠깁니다.</p>
+    <p>문제 발생 시 IT 헬프데스크(it-help@nexusai.com / 내선 1234)에 문의하세요.</p>
+  </ac:rich-text-body>
+</ac:structured-macro>
+
+<ac:structured-macro ac:name="panel" ac:schema-version="1">
+  <ac:parameter ac:name="title">교육비 지원 한도 (연간)</ac:parameter>
+  <ac:rich-text-body>
+    <p>아래 한도 내에서 영수증 제출 후 익월 급여에 반영됩니다.</p>
+    <table>
+      <tbody>
+        <tr>
+          <th>지원 항목</th>
+          <th>연간 한도</th>
+          <th>신청 방법</th>
+        </tr>
+        <tr>
+          <td>온라인 강의 (Udemy, Coursera 등)</td>
+          <td>50만원</td>
+          <td>HR 포털 비용처리</td>
+        </tr>
+        <tr>
+          <td>외부 세미나 / 컨퍼런스</td>
+          <td>100만원</td>
+          <td>팀장 사전 승인 후 HR 포털</td>
+        </tr>
+        <tr>
+          <td>자격증 취득 비용</td>
+          <td>실비 전액</td>
+          <td>합격 증빙 서류 첨부 필수</td>
+        </tr>
+        <tr>
+          <td>도서 구입</td>
+          <td>30만원</td>
+          <td>HR 포털 비용처리</td>
+        </tr>
+      </tbody>
+    </table>
+  </ac:rich-text-body>
+</ac:structured-macro>
+
+<h2>4. 코드 블록 (Code)</h2>
+<p>로컬 개발 환경 초기 설정 스크립트입니다.</p>
+
+<ac:structured-macro ac:name="code" ac:schema-version="1">
+  <ac:parameter ac:name="language">bash</ac:parameter>
+  <ac:parameter ac:name="title">Git 초기 설정</ac:parameter>
+  <ac:plain-text-body><![CDATA[# Git 사용자 정보 설정
+git config --global user.name "홍길동"
+git config --global user.email "gildong@nexusai.com"
+
+# 기본 브랜치 main으로 설정
+git config --global init.defaultBranch main
+
+# 회사 내부 GitLab 접속 확인
+ssh -T git@gitlab.nexusai.internal]]></ac:plain-text-body>
+</ac:structured-macro>
+
+<ac:structured-macro ac:name="code" ac:schema-version="1">
+  <ac:parameter ac:name="language">bash</ac:parameter>
+  <ac:parameter ac:name="title">VPN 연결 상태 확인</ac:parameter>
+  <ac:plain-text-body><![CDATA[# VPN 연결 후 내부망 접근 확인
+ping -c 3 vpn.nexusai.internal
+
+# 사내 GitLab 접근 확인
+curl -I https://gitlab.nexusai.internal/health]]></ac:plain-text-body>
+</ac:structured-macro>

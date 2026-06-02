@@ -98,3 +98,6 @@ pages:
             file: pages/39_data_collection.md
           - title: "4.2.2 모델 학습 파이프라인"
             file: pages/40_model_training.md
+
+  - title: "5. 매크로 파싱 테스트"
+    file: pages/41_macro_test.xml
