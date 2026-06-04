@@ -75,6 +75,27 @@ def get_collection(collection_name: str | None = None):
     return client.get_collection(collection_name or COLLECTION_NAME)
 
 
+def fetch_child_titles(page_ids: list[str], collection_name: str | None = None) -> dict[str, list[str]]:
+    """page_id 목록의 직계 자식 페이지 제목을 {parent_id: [title, ...]} 형태로 반환."""
+    if not page_ids:
+        return {}
+    collection = get_collection(collection_name)
+    result = collection.get(
+        where={"parent_id": {"$in": page_ids}},
+        include=["metadatas"],
+    )
+    children: dict[str, list[str]] = {}
+    seen: set[str] = set()
+    for meta in result["metadatas"]:
+        pid    = meta.get("parent_id", "")
+        page_id = meta.get("page_id", "")
+        title  = meta.get("title", "")
+        if pid and title and page_id not in seen:
+            seen.add(page_id)
+            children.setdefault(pid, []).append(title)
+    return children
+
+
 def fetch_all_chunks_for_pages(page_ids: list[str], collection_name: str | None = None) -> list[dict]:
     """page_id 목록에 속하는 모든 청크를 ChromaDB에서 조회."""
     if not page_ids:

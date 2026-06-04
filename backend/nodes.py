@@ -9,7 +9,7 @@ from typing import TypedDict
 
 from langchain_core.messages import HumanMessage, AIMessage, SystemMessage
 
-from retriever import search_rerank_fetch, COLLECTION_NAME
+from retriever import search_rerank_fetch, fetch_child_titles, COLLECTION_NAME
 from prompts   import REFINE_PROMPT, RAG_PROMPT
 from llm       import get_llm
 
@@ -110,13 +110,24 @@ def _aggregate_by_page(chunks: list[dict]) -> list[dict]:
 def generate_node(state: State) -> dict:
     """
     수집된 청크를 페이지 단위로 묶어 LLM에 전달하고 최종 답변을 생성.
-    대화 기록을 함께 전달해 이전 맥락을 유지한다.
+    대화 기록을 함께 전달해 이전 맥락을 유지하고,
+    각 페이지의 직계 하위 페이지 제목을 함께 제공해 사용자가 추가 탐색할 수 있도록 안내한다.
     """
-    pages        = _aggregate_by_page(state["context"])
-    context_text = "\n\n---\n\n".join(
-        f"[{p['metadata']['title']}]\n{p['document']}"
-        for p in pages
-    )
+    pages    = _aggregate_by_page(state["context"])
+    col_name = state.get("collection") or COLLECTION_NAME
+    page_ids = [p["metadata"].get("page_id", "") for p in pages if p["metadata"].get("page_id")]
+    children = fetch_child_titles(page_ids, col_name)
+
+    parts = []
+    for p in pages:
+        pid  = p["metadata"].get("page_id", "")
+        text = f"[{p['metadata']['title']}]\n{p['document']}"
+        subs = children.get(pid, [])
+        if subs:
+            text += f"\n↳ 하위 페이지: {' | '.join(subs)}"
+        parts.append(text)
+
+    context_text = "\n\n---\n\n".join(parts)
     chain    = RAG_PROMPT | get_llm()
     response = chain.invoke({
         "context":  context_text,
