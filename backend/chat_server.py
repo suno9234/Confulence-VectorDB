@@ -204,7 +204,8 @@ for line in sys.stdin:
             if mode == "updates":
                 if "refine" in data:
                     refined_q = data["refine"].get("refined_query", "")
-                    print(json.dumps({"status": f"검색 중... ({refined_q})"}), flush=True)
+                    preview   = refined_q[:10] + ("..." if len(refined_q) > 10 else "")
+                    print(json.dumps({"status": f"검색 중... ({preview})"}), flush=True)
                 elif "retrieve" in data:
                     context  = data["retrieve"].get("context", [])
                     page_cnt = len({c["metadata"].get("page_id") for c in context})
