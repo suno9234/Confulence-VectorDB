@@ -205,25 +205,68 @@ def rrf_fusion(v_hits: list, b_hits: list, alpha: float, top_k: int) -> list[dic
     ]
 
 
-def search_rerank_fetch(
-    query:           str,
+def multi_search_rerank_fetch(
+    queries:         list[str],
+    rerank_query:    str,
     collection_name: str | None = None,
     top_k:           int        = 5,
     alpha:           float      = 0.4,
 ) -> list[dict]:
     """
-    검색 → 리랭킹 → 페이지 선택 → 전체 청크 조회를 한 번에 수행.
-    search_once.py(검색 탭)와 nodes.py(챗봇)의 공통 파이프라인.
-
-    top_k       : 최종 참고할 페이지 수 (내부적으로 RERANK_FETCH_K개 후보를 먼저 수집)
-    반환 청크마다 score(RRF 표시용), rerank_score(정렬용), vector_score, bm25_score 포함.
+    여러 쿼리로 검색 후 병합 → rerank_query 기준 리랭킹 → 페이지 선택 → 전체 청크 조회.
+    BM25 인덱스를 한 번만 빌드해 쿼리별로 재사용.
+    queries      : 검색에 사용할 쿼리 목록 (주요 쿼리 + 변형 쿼리)
+    rerank_query : 리랭킹 기준 쿼리 (보통 주요 정제 쿼리)
     """
-    hits = search(query=query, collection_name=collection_name, top_k=RERANK_FETCH_K, alpha=alpha)
-    hits = rerank(query, hits)
+    if not queries:
+        return []
+
+    collection = get_collection(collection_name)
+    if collection.count() == 0:
+        raise ValueError("컬렉션이 비어 있습니다. 먼저 임베딩을 실행하세요.")
+
+    model   = _get_embedding_model()
+    fetch_n = RERANK_FETCH_K * 3
+
+    bm25_body = bm25_title = bm25_breadcrumb = all_docs = None
+    if alpha < 1.0:
+        bm25_body, bm25_title, bm25_breadcrumb, all_docs = build_bm25(collection)
+
+    # 쿼리별 검색 → 중복 제거 (key: page_id + chunk_index, 점수 높은 쪽 유지)
+    merged: dict[str, dict] = {}
+    for query in queries:
+        if alpha >= 1.0:
+            raw  = vector_search(query, collection, model, RERANK_FETCH_K)
+            hits = [
+                {"document": h["document"], "metadata": h["metadata"],
+                 "score": round(h["score"], 4),
+                 "vector_score": round(h["score"], 4), "bm25_score": None}
+                for h in raw
+            ]
+        elif alpha <= 0.0:
+            raw  = bm25_search(query, bm25_body, bm25_title, bm25_breadcrumb, all_docs, RERANK_FETCH_K)
+            hits = [
+                {"document": h["document"], "metadata": h["metadata"],
+                 "score": round(h["score"], 2),
+                 "vector_score": None, "bm25_score": round(h["score"], 2)}
+                for h in raw
+            ]
+        else:
+            v_hits = vector_search(query, collection, model, fetch_n)
+            b_hits = bm25_search(query, bm25_body, bm25_title, bm25_breadcrumb, all_docs, fetch_n)
+            hits   = rrf_fusion(v_hits, b_hits, alpha, RERANK_FETCH_K)
+
+        for hit in hits:
+            meta = hit["metadata"]
+            key  = f"{meta.get('page_id', '')}__{meta.get('chunk_index', 0)}"
+            if key not in merged or hit["score"] > merged[key]["score"]:
+                merged[key] = hit
+
+    hits = rerank(rerank_query, list(merged.values()))
 
     # 페이지별 최고 점수 집계
-    page_rerank:  dict[str, float] = {}
-    page_rrf:     dict[str, float] = {}
+    page_rerank:  dict[str, float]  = {}
+    page_rrf:     dict[str, float]  = {}
     page_vscores: dict[str, object] = {}
     page_bscores: dict[str, object] = {}
     for hit in hits:
@@ -263,6 +306,22 @@ def search_rerank_fetch(
         int(c["metadata"].get("chunk_index", 0)),
     ))
     return all_chunks
+
+
+def search_rerank_fetch(
+    query:           str,
+    collection_name: str | None = None,
+    top_k:           int        = 5,
+    alpha:           float      = 0.4,
+) -> list[dict]:
+    """단일 쿼리 검색. search_once.py(검색 탭)에서 사용하는 편의 래퍼."""
+    return multi_search_rerank_fetch(
+        queries         = [query],
+        rerank_query    = query,
+        collection_name = collection_name,
+        top_k           = top_k,
+        alpha           = alpha,
+    )
 
 
 def rerank(query: str, hits: list[dict]) -> list[dict]:

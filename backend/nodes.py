@@ -9,7 +9,7 @@ from typing import TypedDict
 
 from langchain_core.messages import HumanMessage, AIMessage, SystemMessage
 
-from retriever import search_rerank_fetch, fetch_child_titles, COLLECTION_NAME
+from retriever import multi_search_rerank_fetch, COLLECTION_NAME
 from prompts   import REFINE_PROMPT, RAG_PROMPT
 from llm       import get_llm
 
@@ -17,7 +17,8 @@ from llm       import get_llm
 class State(TypedDict):
     """LangGraph 파이프라인 전체에서 공유되는 상태 객체."""
     question:       str        # 사용자의 원본 질문
-    refined_query:  str        # refine_node가 생성한 검색용 정제 쿼리
+    refined_query:  str        # refine_node가 생성한 주요 검색 쿼리 (리랭킹 기준)
+    multi_queries:  list[str]  # refine_node가 생성한 전체 검색 쿼리 목록 (주요 + 변형)
     collection:     str        # 검색할 ChromaDB 컬렉션명
     top_k:          int        # 최종 참고할 페이지 수
     alpha:          float      # BM25·벡터 비율 (0=BM25 전용, 1=벡터 전용)
@@ -46,28 +47,35 @@ def _to_lc_messages(history: list[dict]) -> list:
 
 def refine_node(state: State) -> dict:
     """
-    사용자 질문을 검색에 적합한 짧은 키워드 쿼리로 변환.
+    사용자 질문을 검색용 쿼리 3개(주요 + 변형 2개)로 변환.
+    첫 번째 줄이 주요 쿼리(리랭킹 기준), 나머지는 어휘 커버리지 확장용.
     대화 기록이 있으면 맥락을 반영해 지시어를 구체적인 키워드로 치환.
     """
-    chain   = REFINE_PROMPT | get_llm()
-    result  = chain.invoke({
+    chain  = REFINE_PROMPT | get_llm()
+    result = chain.invoke({
         "question": state["question"],
         "history":  _to_lc_messages(state.get("history", [])),
     })
-    refined = result.content.strip()
-    return {"refined_query": refined or state["question"]}
+    lines   = [l.strip() for l in result.content.strip().splitlines() if l.strip()]
+    refined = lines[0] if lines else state["question"]
+    return {
+        "refined_query": refined,
+        "multi_queries": lines if lines else [state["question"]],
+    }
 
 
 def retrieve_node(state: State) -> dict:
     """
-    정제 쿼리로 하이브리드 검색 + 리랭킹 + 페이지 선택 + 전체 청크 조회.
-    세부 로직은 retriever.search_rerank_fetch()에 위임.
+    멀티쿼리로 하이브리드 검색 → 병합 → 정제 쿼리 기준 리랭킹 → 페이지 선택 → 전체 청크 조회.
+    세부 로직은 retriever.multi_search_rerank_fetch()에 위임.
     """
-    query    = state.get("refined_query") or state["question"]
+    queries  = state.get("multi_queries") or [state.get("refined_query") or state["question"]]
+    rerank_q = state.get("refined_query") or state["question"]
     col_name = state.get("collection") or COLLECTION_NAME
 
-    chunks = search_rerank_fetch(
-        query           = query,
+    chunks = multi_search_rerank_fetch(
+        queries         = queries,
+        rerank_query    = rerank_q,
         collection_name = col_name,
         top_k           = state.get("top_k", 5),
         alpha           = state.get("alpha", 0.4),
@@ -110,24 +118,13 @@ def _aggregate_by_page(chunks: list[dict]) -> list[dict]:
 def generate_node(state: State) -> dict:
     """
     수집된 청크를 페이지 단위로 묶어 LLM에 전달하고 최종 답변을 생성.
-    대화 기록을 함께 전달해 이전 맥락을 유지하고,
-    각 페이지의 직계 하위 페이지 제목을 함께 제공해 사용자가 추가 탐색할 수 있도록 안내한다.
+    대화 기록을 함께 전달해 이전 맥락을 유지한다.
     """
-    pages    = _aggregate_by_page(state["context"])
-    col_name = state.get("collection") or COLLECTION_NAME
-    page_ids = [p["metadata"].get("page_id", "") for p in pages if p["metadata"].get("page_id")]
-    children = fetch_child_titles(page_ids, col_name)
-
-    parts = []
-    for p in pages:
-        pid  = p["metadata"].get("page_id", "")
-        text = f"[{p['metadata']['title']}]\n{p['document']}"
-        subs = children.get(pid, [])
-        if subs:
-            text += f"\n↳ 하위 페이지: {' | '.join(subs)}"
-        parts.append(text)
-
-    context_text = "\n\n---\n\n".join(parts)
+    pages        = _aggregate_by_page(state["context"])
+    context_text = "\n\n---\n\n".join(
+        f"[{p['metadata']['title']}]\n{p['document']}"
+        for p in pages
+    )
     chain    = RAG_PROMPT | get_llm()
     response = chain.invoke({
         "context":  context_text,
